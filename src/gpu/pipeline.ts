@@ -98,22 +98,29 @@ export async function createPipeline(
     ],
   });
 
-  // Build offset map (time at byte 0, each subsequent uniform at 16-byte boundary)
+  // Build offset map (time at byte 0, each subsequent uniform at 16-byte boundary).
+  // Filter out "time" if the parser included it at index 0 so that buffer layout
+  // and active uniforms stay consistent with shader struct expectations.
   uniformOffsets.clear();
   uniformValues.clear();
   uniformOffsets.set('time', 0);
-  uniforms.forEach((uniform, i) => {
+
+  const nonTimeUniforms = uniforms.filter(
+    (u) => u.name.toLowerCase() !== 'time'
+  );
+
+  nonTimeUniforms.forEach((uniform, i) => {
     const offset = 16 * (i + 1);
     uniformOffsets.set(uniform.name, offset);
     uniformValues.set(uniform.name, uniform.default);
   });
 
-  activeUniforms = [...uniforms];
+  activeUniforms = [...nonTimeUniforms];
 
   console.log(
     '%c🔧 Pipeline created with %d uniforms',
     'color:#67e8f9',
-    uniforms.length
+    nonTimeUniforms.length
   );
 
   return currentPipeline;

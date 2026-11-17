@@ -16,13 +16,16 @@ const DEFAULT_UNIFORMS: Uniform[] = [
 ];
 
 function extractCodeBlock(text: string, lang: string): string | null {
-  const regex = new RegExp(`\`\`\`(?:${lang}|${lang.toLowerCase()})?\\s*([\\s\\S]+?)(?:\\s*\`\`\`|$)`, 'i');
+  const regex = new RegExp(`\`\`\`${lang}\\s*([\\s\\S]+?)(?:\\s*\`\`\`|$)`, 'i');
   const match = text.match(regex);
   return match?.[1]?.trim() ?? null;
 }
 
 function deriveTitleFromPrompt(text: string): string {
   const lower = text.toLowerCase();
+  if (lower.includes('bubble')) {
+    return 'Bubble Realm';
+  }
   if (lower.includes('kelp') || lower.includes('sea') || lower.includes('ocean') || lower.includes('underwater')) {
     return 'Kelp Forest';
   }
@@ -40,9 +43,6 @@ function deriveTitleFromPrompt(text: string): string {
   }
   if (lower.includes('aurora') || lower.includes('veil') || lower.includes('light')) {
     return 'Aurora Veil';
-  }
-  if (lower.includes('bubble') || lower.includes('jelly')) {
-    return 'Bubble Realm';
   }
   if (lower.includes('crystal') || lower.includes('glass') || lower.includes('lattice')) {
     return 'Crystal Lattice';
@@ -72,18 +72,25 @@ export function parseLLMOutput(raw: string): Scene {
       const parsed = JSON.parse(jsonBlock);
       if (Array.isArray(parsed.uniforms) && parsed.uniforms.length > 0) {
         uniforms = parsed.uniforms
-          .map((u: any) => ({
-            name: String(u.name ?? 'unknown').trim(),
-            type: 'f32',
-            default: Number(u.default ?? 1.0),
-            min: Number(u.min ?? 0.0),
-            max: Number(u.max ?? 10.0),
-          }))
-          .filter((u: Uniform) => u.name.length > 1 && !Number.isNaN(u.default));
+          .map((u: any) => {
+            const nameStr = String(u.name ?? 'unknown').trim();
+            let def = Number(u.default ?? 1.0);
+            if (Number.isNaN(def)) def = 1.0;
+            let mn = Number(u.min ?? 0.0);
+            if (Number.isNaN(mn)) mn = 0.0;
+            let mx = Number(u.max ?? 10.0);
+            if (Number.isNaN(mx)) mx = 10.0;
+            return {
+              name: nameStr,
+              type: 'f32',
+              default: def,
+              min: mn,
+              max: mx,
+            } as Uniform;
+          })
+          .filter((u: Uniform) => u.name.length > 1);
       }
-      if (typeof parsed.jsLogic === 'string' && parsed.jsLogic.trim().length > 5) {
-        jsLogic = parsed.jsLogic.trim();
-      }
+      if (typeof parsed.jsLogic === 'string') jsLogic = parsed.jsLogic.trim() || jsLogic;
     } catch (err) {
       console.warn(
         '%c⚠️ JSON metadata block could not be parsed. Using safe defaults.',
@@ -138,7 +145,7 @@ export function validateWGSL(wgsl: string): boolean {
 
   const hasVertexEntry = /@vertex|fn vs\s*\(\s*@\s*builtin\(vertex_index\)|\bvs\s*\(\s*@builtin/.test(normalized);
   const hasFragmentEntry = /@fragment|fn fs\s*\(\s*@\s*builtin\(position\)|\bfs\s*\(\s*@builtin/.test(normalized);
-  const hasUniformBlock = /var<uniform>\s+\w+:\s*Uniforms|@binding\(0\).*uniform|struct Uniforms/.test(normalized);
+  const hasUniformBlock = /var<uniform>/.test(normalized);
   const hasPositionOutput = /@builtin\(position\)|->\s*@builtin\(position\)/.test(normalized);
   const hasColorOutput = /@location\(0\)|->\s*@location\(0\)\s*vec4f/.test(normalized);
 
