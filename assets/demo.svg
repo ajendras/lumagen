@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520" viewBox="0 0 900 520" role="img" aria-label="Lumagen — demo">
+  <style>
+    text{font-family:ui-monospace,SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:15px}
+    .l{opacity:0}
+    .ty{clip-path:inset(0 100% 0 0)}
+    .cur{animation:blink 1s steps(1) infinite}
+    @keyframes show{to{opacity:1}}
+    @keyframes type{to{clip-path:inset(0 0 0 0)}}
+    @keyframes blink{50%{opacity:0}}
+    @media (prefers-reduced-motion:reduce){.l{opacity:1;animation:none!important}.ty{clip-path:none;animation:none!important}}
+  </style>
+  <rect width="900" height="520" rx="14" fill="#0d1117"/>
+  <rect x=".5" y=".5" width="899" height="520" rx="14" fill="none" stroke="#30363d"/>
+  <rect width="900" height="40" rx="14" fill="#161b22"/><rect y="26" width="900" height="14" fill="#161b22"/>
+  <circle cx="24" cy="20" r="6" fill="#ff5f57"/><circle cx="44" cy="20" r="6" fill="#febc2e"/><circle cx="64" cy="20" r="6" fill="#28c840"/>
+  <text x="450" y="25" text-anchor="middle" fill="#8b949e" style="font-size:13px">Lumagen — demo</text>
+<text x="28" y="74" class="l" style="animation:show .01s 0.60s forwards"><tspan fill="#67e8f9">❯</tspan></text><text x="50" y="74" class="l ty" style="animation:show .01s 0.60s forwards,type 0.50s steps(11) 0.60s forwards" fill="#e5e7eb">npm run dev</text>
+<text x="50" y="100" class="l" style="animation:show .01s 1.40s forwards" fill="#94a3b8">Vite server running at http://localhost:5173</text>
+<text x="50" y="126" class="l" style="animation:show .01s 1.62s forwards" fill="#94a3b8">Pastel editor opens with gallery sidebar and prompt box</text>
+<text x="28" y="178" class="l" style="animation:show .01s 2.19s forwards"><tspan fill="#67e8f9">❯</tspan></text><text x="50" y="178" class="l ty" style="animation:show .01s 2.19s forwards,type 2.20s steps(71) 2.19s forwards" fill="#e5e7eb">Enter &apos;swaying kelp forest with god rays, manta rays and a sunken ship&apos;</text>
+<text x="50" y="204" class="l" style="animation:show .01s 4.69s forwards" fill="#94a3b8">Querying Ollama → generating WGSL and scene JSON...</text>
+<text x="50" y="230" class="l" style="animation:show .01s 4.91s forwards" fill="#94a3b8">Preview renders interactive underwater scene with 5 auto-exposed uniforms</text>
+<text x="28" y="282" class="l" style="animation:show .01s 5.48s forwards"><tspan fill="#67e8f9">❯</tspan></text><text x="50" y="282" class="l ty" style="animation:show .01s 5.48s forwards,type 2.16s steps(48) 5.48s forwards" fill="#e5e7eb">Drag &apos;swaySpeed&apos; slider to 0.4 then click Export</text>
+<text x="50" y="308" class="l" style="animation:show .01s 7.94s forwards" fill="#94a3b8">Generated standalone.html (87 KB)</text>
+<text x="50" y="334" class="l" style="animation:show .01s 8.16s forwards" fill="#94a3b8">Opening it shows identical scene with no build step or external files</text>
+<text x="28" y="386" class="l" style="animation:show .01s 8.73s forwards"><tspan fill="#67e8f9">❯</tspan></text><text x="50" y="386" class="l ty" style="animation:show .01s 8.73s forwards,type 2.20s steps(72) 8.73s forwards" fill="#e5e7eb">Click &apos;Kelp Template&apos; then change prompt to &apos;neon cyber garden at night&apos;</text>
+<text x="50" y="412" class="l" style="animation:show .01s 11.23s forwards" fill="#94a3b8">Scene updates live with new shader and color palette</text>
+<text x="50" y="438" class="l" style="animation:show .01s 11.45s forwards" fill="#94a3b8">Performance monitor shows steady 58 FPS</text>
+<g class="l" style="animation:show .01s 12.02s forwards"><text x="28" y="490" fill="#67e8f9">❯</text><rect class="cur" x="50" y="475" width="10" height="18" fill="#e5e7eb"/></g>
+</svg>

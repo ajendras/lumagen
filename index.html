@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>lumagen 🌸</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600&amp;family=Quicksand:wght@500;600&amp;display=swap" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600&amp;family=Quicksand:wght@500;600&amp;display=swap');
+        
+        :root {
+            --primary: 244 114 182;
+        }
+        
+        .tail-container {
+            font-family: 'Nunito', system-ui, sans-serif;
+        }
+        
+        .canvas-container {
+            box-shadow: 0 25px 50px -12px rgb(244 114 182);
+        }
+        
+        input[type="range"].slider {
+            accent-color: rgb(244 114 182);
+        }
+        
+        .btn-bounce {
+            transition: all 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
+        }
+        
+        .btn-bounce:hover {
+            transform: scale(1.04);
+        }
+        
+        .btn-bounce:active {
+            transform: scale(0.97);
+        }
+        
+        .panel {
+            animation: fadeIn 0.6s cubic-bezier(0.23, 1, 0.32, 1) forwards;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(16px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .thumbnail {
+            transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        
+        .thumbnail:hover {
+            transform: scale(1.12) rotate(6deg);
+        }
+        
+        .glass {
+            background: rgba(255, 247, 237, 0.82);
+            backdrop-filter: blur(16px);
+        }
+        
+        .modal {
+            animation: popIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        
+        @keyframes popIn {
+            0% { transform: scale(0.8); opacity: 0; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        
+        @keyframes wiggle {
+            0%, 100% { transform: rotate(-3deg); }
+            50% { transform: rotate(3deg); }
+        }
+        
+        .animate-wiggle-once {
+            animation: wiggle 0.6s ease-in-out;
+        }
+    </style>
+    <script>
+        function initTailwind() {
+            tailwind.config = {
+                content: [],
+                theme: {
+                    extend: {
+                        fontFamily: {
+                            sans: ['Nunito', 'system-ui', 'sans-serif'],
+                            display: ['Quicksand', 'sans-serif']
+                        },
+                        borderRadius: {
+                            '3xl': '1.5rem',
+                        },
+                        colors: {
+                            primary: '#f472b6',
+                            secondary: '#67e8f9',
+                            peach: '#fed7aa',
+                            mint: '#a7f3d0',
+                            lavender: '#c4b5fd',
+                        }
+                    }
+                }
+            }
+        }
+        window.addEventListener('load', initTailwind);
+    </script>
+</head>
+<body class="tail-container bg-[#fff1f2] text-pink-950 overflow-hidden">
+    <div class="flex flex-col h-screen">
+        <!-- header -->
+        <header class="h-16 bg-white border-b border-[#f9d0e1] px-8 flex items-center justify-between shadow-sm z-50">
+            <div class="flex items-center gap-4">
+                <div onclick="window.location.reload()" class="flex items-center gap-3 cursor-pointer">
+                    <div class="w-9 h-9 bg-gradient-to-br from-[#f472b6] to-[#67e8f9] rounded-2xl flex items-center justify-center text-3xl leading-none pt-0.5 shadow-inner">🌟</div>
+                    <div class="font-display text-4xl font-semibold tracking-tighter bg-gradient-to-r from-[#f472b6] to-[#67e8f9] bg-clip-text text-transparent">lumagen</div>
+                </div>
+                <div class="px-3 py-1 text-[10px] font-medium rounded-3xl bg-mint-100 text-emerald-500 border border-emerald-200">ALPHA</div>
+            </div>
+            
+            <div class="flex items-center gap-3">
+                <button onclick="showGalleryModal()" 
+                        class="flex items-center gap-x-2 px-5 h-9 text-sm font-medium rounded-3xl border border-[#f9d0e1] hover:border-[#67e8f9] hover:text-cyan-500 transition-colors">
+                    <span class="text-lg">🖼️</span>
+                    <span>GALLERY</span>
+                </button>
+                
+                <button onclick="exportCurrentScene()" 
+                        class="flex items-center gap-x-2 px-6 h-9 bg-white border border-[#f9d0e1] hover:bg-peach-100 rounded-3xl text-pink-500 font-medium text-sm transition-all btn-bounce shadow-gentle">
+                    <span>📦</span>
+                    <span>EXPORT .HTML</span>
+                </button>
+                
+                <div onclick="randomRemix()" class="w-8 h-8 bg-secondary/10 hover:bg-secondary/30 text-secondary rounded-2xl flex items-center justify-center text-xl cursor-pointer transition-all">♻️</div>
+            </div>
+        </header>
+        
+        <div class="flex flex-1 overflow-hidden">
+            <!-- canvas area -->
+            <div class="flex-1 flex flex-col items-center justify-center p-8 bg-[radial-gradient(at_center,#fdf4f8_0%,transparent_70%)]">
+                <div class="relative canvas-container rounded-3xl overflow-hidden border-[14px] border-white" style="box-shadow: 25px 25px 60px -15px rgb(244 114 182 / 0.25);">
+                    <canvas id="canvas" width="860" height="620" 
+                            class="block bg-[#111827] rounded-2xl"></canvas>
+                    
+                    <!-- scene title overlay -->
+                    <div id="scene-title" 
+                         class="absolute top-6 left-6 px-5 py-2.5 glass text-pink-500 text-sm font-medium rounded-3xl shadow-inner flex items-center gap-x-3">
+                        <span class="text-2xl">🌿</span>
+                        <span id="title-text" class="font-display tracking-tight">Kelp Garden</span>
+                    </div>
+                    
+                    <!-- perf monitor -->
+                    <div id="perf-monitor" 
+                         class="absolute bottom-6 right-6 glass text-[10px] font-mono leading-none p-3.5 rounded-3xl shadow-inner border border-white/60 text-pink-400 flex flex-col gap-y-1">
+                        <div class="flex justify-between gap-x-6">
+                            <div>FPS <span id="fps" class="text-secondary font-semibold tabular-nums">62</span></div>
+                            <div>△ <span id="draws" class="font-semibold tabular-nums">1</span></div>
+                        </div>
+                        <div class="text-[9px] text-pink-300/70">WebGPU • live</div>
+                    </div>
+                </div>
+                
+                <div class="mt-10 flex items-center gap-x-8 text-xs">
+                    <div onclick="randomRemix()" 
+                         class="inline-flex items-center gap-x-2 px-7 py-3 bg-white/70 hover:bg-white rounded-3xl cursor-pointer transition-all border border-transparent hover:border-pink-200 shadow-sm">
+                        <span class="text-pink-400">✦</span>
+                        <span class="font-medium text-pink-400 tracking-wider">REMIX LIGHTING</span>
+                        <span class="text-pink-400">✦</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- sidebar -->
+            <div class="w-80 bg-white flex flex-col border-l border-pink-100 shadow-2xl" style="border-top-left-radius: 32px;">
+                <!-- prompt area -->
+                <div class="p-6 border-b border-pink-100">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-x-3">
+                            <div class="text-3xl">🪄</div>
+                            <div>
+                                <div class="font-display text-2xl font-semibold text-[#f472b6] tracking-tighter">Describe scene</div>
+                                <div class="text-pink-300 text-xs -mt-1">local LLM</div>
+                            </div>
+                        </div>
+                        <div class="px-4 py-1 text-[10px] font-medium bg-lavender-100 text-violet-400 rounded-3xl">llama 3.2</div>
+                    </div>
+                    
+                    <textarea id="prompt-input" rows="3"
+                        class="w-full p-5 rounded-3xl border border-pink-200 focus:border-[#67e8f9] outline-none text-sm leading-relaxed placeholder:text-pink-300/70 resize-none"
+                        placeholder="A serene underwater kelp forest with gentle currents and tiny glowing jellyfish..."></textarea>
+                    
+                    <button id="generate-btn"
+                            class="mt-5 w-full h-14 bg-gradient-to-r from-[#f472b6] to-[#67e8f9] text-white font-semibold rounded-3xl flex items-center justify-center gap-x-3 shadow-lg shadow-pink-400/30 hover:shadow-2xl transition-all btn-bounce text-base">
+                        <span id="btn-text">GENERATE MAGIC</span>
+                        <span class="text-2xl">🌟</span>
+                    </button>
+                </div>
+                
+                <!-- controls -->
+                <div class="flex-1 p-6 overflow-y-auto bg-[#fff7ed]" id="controls-container">
+                    <div class="flex justify-between items-baseline mb-6">
+                        <div class="uppercase text-xs font-semibold tracking-[0.5px] text-pink-400">Parameters</div>
+                        <button onclick="resetUniforms()" 
+                                class="flex items-center gap-x-1 text-pink-300 hover:text-pink-400 transition-colors text-xs">
+                            <span class="text-base leading-none">⟳</span>
+                            <span>RESET ALL</span>
+                        </button>
+                    </div>
+                    
+                    <div id="uniforms-list" class="space-y-8">
+                        <!-- dynamically populated by panel.ts -->
+                    </div>
+                </div>
+                
+                <!-- mini gallery -->
+                <div class="px-6 py-5 border-t border-pink-100 bg-white">
+                    <div class="flex items-center justify-between text-pink-300 text-xs font-medium mb-4">
+                        <div>TEMPLATES</div>
+                        <div onclick="showGalleryModal()" class="cursor-pointer hover:text-pink-400">all 8 →</div>
+                    </div>
+                    <div id="mini-gallery" class="grid grid-cols-4 gap-3">
+                        <!-- populated by JS -->
+                    </div>
+                </div>
+                
+                <div class="h-14 bg-[#fff7ed] border-t border-pink-100 flex items-center px-6 text-[10px] text-pink-400 font-light">
+                    Real-time WebGPU • 60fps target
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- gallery modal -->
+    <div onclick="if(event.target.id === 'modal-backdrop') hideGalleryModal()" id="modal-backdrop"
+         class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-[9999]">
+        <div onclick="event.stopImmediatePropagation()" 
+             class="modal bg-white rounded-3xl w-full max-w-3xl mx-4 shadow-2xl overflow-hidden">
+            <div class="px-8 pt-7 pb-5 border-b flex items-center justify-between bg-gradient-to-r from-pink-50 to-transparent">
+                <div class="font-display text-3xl font-semibold text-pink-500 flex items-center gap-x-3">
+                    <span>🖼️</span>
+                    <span>Template Gallery</span>
+                </div>
+                <button onclick="hideGalleryModal()" 
+                        class="text-5xl leading-none text-pink-200 hover:text-pink-400 transition-colors">×</button>
+            </div>
+            
+            <div id="gallery-content" class="p-8 grid grid-cols-2 gap-6 max-h-[440px] overflow-auto bg-[#fffaf5]">
+                <!-- populated by panel.ts -->
+            </div>
+            
+            <div class="px-8 py-6 bg-white border-t flex justify-end">
+                <button onclick="hideGalleryModal()" 
+                        class="px-9 py-3 text-pink-400 hover:bg-pink-50 transition-colors rounded-3xl text-sm font-medium">Close window</button>
+            </div>
+        </div>
+    </div>
+    
+    <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
