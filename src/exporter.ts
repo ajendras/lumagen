@@ -5,6 +5,7 @@
  *   • A complete WebGPU render loop with dynamic uniform buffer
  *   • Pastel-themed minimal UI (title, FPS, pause, randomize)
  *   • Responsive canvas with DPR handling
+ *   • WebAudio reactive mode (mic + track support with FFT analysis)
  * All JS is minified before embedding. The resulting file runs instantly
  * when opened in any WebGPU-capable browser.
  */
@@ -43,6 +44,7 @@ const EXPORT_TEMPLATE = `<!DOCTYPE html>
     font-weight: 600; font-size: 12px; cursor: pointer; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   }
   button:hover { transform: scale(1.08); background: #fdf4f8; }
+  button.active { background:#67e8f9; color:white; border-color:#67e8f9; }
   .fps {
     font-family: monospace; font-size: 13px; background: #fff; padding: 2px 9px; border-radius: 9999px;
     border: 1px solid #f9d0e1; color: #67e8f9; font-weight: 700;
@@ -64,10 +66,12 @@ const EXPORT_TEMPLATE = `<!DOCTYPE html>
 <div class="controls">
   <button id="pause">⏸︎ PAUSE</button>
   <button id="random">♻︎ REMIX</button>
+  <button id="mic">🎤 MIC</button>
+  <button id="track">🎵 TRACK</button>
   <div class="fps">FPS <span id="fps-val">60</span></div>
 </div>
 
-<div class="info">exported from lumagen • {{SIZE}}kb</div>
+<div class="info">exported from lumagen • {{SIZE}}kb • reactive</div>
 
 <script>
 {{MINIFIED_JS}}
@@ -81,13 +85,16 @@ function buildRuntimeJS(scene: Scene, title: string): string {
     uniformDefaults[u.name] = u.default;
   });
 
-  // The runtime is completely self-contained and mirrors the production pipeline
+  // The runtime is completely self-contained and mirrors the production pipeline.
+  // WebAudio reactive mode feeds FFT data into audio* uniforms when enabled.
   return `(() => {
   const canvas = document.getElementById('c');
   const titleEl = document.getElementById('title');
   const fpsEl = document.getElementById('fps-val');
   const pauseBtn = document.getElementById('pause');
   const remixBtn = document.getElementById('random');
+  const micBtn = document.getElementById('mic');
+  const trackBtn = document.getElementById('track');
 
   let device, context, pipeline, uniformBuffer, bindGroup;
   let raf = null;
@@ -99,6 +106,12 @@ function buildRuntimeJS(scene: Scene, title: string): string {
 
   const uniforms = ${JSON.stringify(uniformDefaults)};
   const wgsl = ${JSON.stringify(scene.wgsl)};
+
+  let audioContext = null;
+  let analyser = null;
+  let frequencyData = new Uint8Array(128);
+  let audioElement = null;
+  let isAudioEnabled = false;
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -170,14 +183,33 @@ function buildRuntimeJS(scene: Scene, title: string): string {
     return true;
   }
 
+  function updateAudioData() {
+    if (!isAudioEnabled || !analyser) return;
+    analyser.getByteFrequencyData(frequencyData);
+    let bass = 0, mid = 0, treble = 0, total = 0;
+    for (let i = 0; i < 32; i++) { bass += frequencyData[i]; total += frequencyData[i]; }
+    for (let i = 32; i < 64; i++) { mid += frequencyData[i]; total += frequencyData[i]; }
+    for (let i = 64; i < 128; i++) { treble += frequencyData[i]; total += frequencyData[i]; }
+    const len = frequencyData.length || 1;
+    const audioBassVal = Math.min(2.0, (bass / (32 * 255)) * 2.2);
+    const audioMidVal = Math.min(2.0, (mid / (32 * 255)) * 2.0);
+    const audioTrebleVal = Math.min(2.0, (treble / (64 * 255)) * 2.4);
+    const audioLevelVal = Math.min(2.0, (total / (len * 255)) * 2.8);
+    if ('audioBass' in uniforms) uniforms.audioBass = audioBassVal;
+    if ('audioMid' in uniforms) uniforms.audioMid = audioMidVal;
+    if ('audioTreble' in uniforms) uniforms.audioTreble = audioTrebleVal;
+    if ('audioLevel' in uniforms) uniforms.audioLevel = audioLevelVal;
+  }
+
   function writeUniforms(time) {
     if (!uniformBuffer) return;
+    updateAudioData();
     const data = new Float32Array(16);
     data[0] = time;
     let idx = 1;
     for (const key of Object.keys(uniforms)) {
       if (key !== 'time') {
-        data[idx++] = uniforms[key];
+        data[idx++] = uniforms[key] ?? 0.0;
       }
     }
     device.queue.writeBuffer(uniformBuffer, 0, data);
@@ -234,21 +266,79 @@ function buildRuntimeJS(scene: Scene, title: string): string {
     if (uniforms.intensity !== undefined) uniforms.intensity = 0.7 + Math.random() * 2.1;
     if (uniforms.hueShift !== undefined) uniforms.hueShift = Math.random();
     if (uniforms.density !== undefined) uniforms.density = 4 + Math.random() * 9;
+    if (uniforms.audioLevel !== undefined) uniforms.audioLevel = Math.random();
     startTime = performance.now();
     titleEl.style.transition = 'all .4s cubic-out';
     titleEl.style.transform = 'scale(1.15)';
     setTimeout(() => { titleEl.style.transform = 'scale(1)'; }, 420);
   }
 
+  async function enableMic() {
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const source = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        isAudioEnabled = true;
+        micBtn.classList.add('active');
+        micBtn.textContent = '🎤 LIVE';
+        console.log('%c🎤 Microphone reactivity enabled (FFT running)', 'color:#67e8f9');
+      } catch (e) {
+        console.error('Microphone access denied', e);
+        alert('Microphone access denied. Check permissions.');
+      }
+    } else {
+      isAudioEnabled = !isAudioEnabled;
+      micBtn.classList.toggle('active', isAudioEnabled);
+      micBtn.textContent = isAudioEnabled ? '🎤 LIVE' : '🎤 MIC';
+    }
+  }
+
+  function loadTrack() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'audio/*';
+    input.onchange = async (ev) => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+      }
+      if (audioElement) {
+        audioElement.pause();
+        audioElement = null;
+      }
+      const url = URL.createObjectURL(file);
+      audioElement = new Audio(url);
+      const source = audioContext.createMediaElementSource(audioElement);
+      source.connect(analyser);
+      analyser.connect(audioContext.destination);
+      audioElement.play().catch(console.error);
+      isAudioEnabled = true;
+      trackBtn.classList.add('active');
+      trackBtn.textContent = '♫ ' + file.name.substring(0, 12);
+      console.log('%c🎵 Audio track loaded and playing with FFT reactivity', 'color:#67e8f9');
+    };
+    input.click();
+  }
+
   window.addEventListener('resize', resize);
 
   pauseBtn.addEventListener('click', togglePause);
   remixBtn.addEventListener('click', randomize);
+  micBtn.addEventListener('click', enableMic);
+  trackBtn.addEventListener('click', loadTrack);
 
   // Keyboard support
   document.addEventListener('keydown', e => {
     if (e.key === ' ') { e.preventDefault(); togglePause(); }
     if (e.key.toLowerCase() === 'r') randomize();
+    if (e.key.toLowerCase() === 'm') enableMic();
   });
 
   initWebGPU().then(success => {
@@ -264,7 +354,8 @@ function buildRuntimeJS(scene: Scene, title: string): string {
 
 /**
  * Returns a complete standalone HTML file ready for distribution.
- * The shader, uniforms and render loop are fully inlined.
+ * The shader, uniforms and render loop are fully inlined. WebAudio
+ * reactivity (mic + track) is included when audio uniforms are present.
  */
 export async function exportToHTML(scene: Scene, title: string = 'Lumagen Scene'): Promise<string> {
   if (!scene || !scene.wgsl) {
@@ -292,7 +383,7 @@ export async function exportToHTML(scene: Scene, title: string = 'Lumagen Scene'
   html = html.replace('{{SIZE}}', String(sizeKB));
 
   console.log(
-    '%c📦 Exported standalone HTML — %d KB — %s',
+    '%c📦 Exported standalone HTML — %d KB — %s (with WebAudio reactivity)',
     'color:#67e8f9;font-weight:600',
     sizeKB,
     safeTitle

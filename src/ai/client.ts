@@ -17,14 +17,18 @@ Rules:
 - Output a complete WGSL shader using a full-screen triangle (vertex_index).
 - The shader must define: struct Uniforms { time: f32, speed: f32, intensity: f32, ... } with at least speed and intensity.
 - Use organic motion, soft gradients, and gentle noise. Keep code under 110 lines.
+- If the prompt mentions music, beat, reactive, audio, visualizer, microphone or sound, include uniforms audioLevel, audioBass, audioMid, audioTreble (all f32, default 0.0, min 0.0, max 2.0). Use them in the shader to pulse colors, scale features, add distortion or drive intensity.
 - After the shader, output a JSON block with "uniforms" (array of {name, type:"f32", default, min, max}) and optional "jsLogic".
 - Only respond with the two code blocks. No explanations.
 
 Example output format:
 \`\`\`wgsl
-struct Uniforms { time: f32, speed: f32, intensity: f32, hueShift: f32 }
+struct Uniforms { 
+  time: f32, speed: f32, intensity: f32, hueShift: f32,
+  audioLevel: f32, audioBass: f32, audioMid: f32, audioTreble: f32 
+}
 @group(0) @binding(0) var<uniform> u: Uniforms;
-// ... full shader with vs() and fs()
+// ... full shader with vs() and fs() using audio uniforms for reactivity
 \`\`\`
 
 \`\`\`json
@@ -32,7 +36,11 @@ struct Uniforms { time: f32, speed: f32, intensity: f32, hueShift: f32 }
   "uniforms": [
     {"name":"speed","type":"f32","default":1.8,"min":0.4,"max":6.0},
     {"name":"intensity","type":"f32","default":1.2,"min":0.6,"max":3.5},
-    {"name":"hueShift","type":"f32","default":0.65,"min":0.0,"max":1.0}
+    {"name":"hueShift","type":"f32","default":0.65,"min":0.0,"max":1.0},
+    {"name":"audioLevel","type":"f32","default":0.0,"min":0.0,"max":2.0},
+    {"name":"audioBass","type":"f32","default":0.0,"min":0.0,"max":2.0},
+    {"name":"audioMid","type":"f32","default":0.0,"min":0.0,"max":2.0},
+    {"name":"audioTreble","type":"f32","default":0.0,"min":0.0,"max":2.0}
   ],
   "jsLogic": ""
 }
@@ -79,7 +87,7 @@ function extractSceneFromLLMOutput(raw: string): Scene {
       const parsed = JSON.parse(jsonText);
       if (Array.isArray(parsed.uniforms)) {
         uniforms = parsed.uniforms.map((u: any) => ({
-          name: String(u.name),
+          name: String(u.name).toLowerCase(),
           type: 'f32',
           default: Number(u.default ?? 1.0),
           min: Number(u.min ?? 0.0),
@@ -97,6 +105,8 @@ function extractSceneFromLLMOutput(raw: string): Scene {
     ? 'Kelp Forest'
     : raw.toLowerCase().includes('particle')
     ? 'Stellar Particles'
+    : raw.toLowerCase().includes('audio') || raw.toLowerCase().includes('music') || raw.toLowerCase().includes('beat')
+    ? 'Audio Reactive Dream'
     : 'AI Dreamscape';
 
   return {
@@ -133,15 +143,19 @@ export async function generateScene(description: string): Promise<Scene> {
   } catch (err: any) {
     console.warn('Ollama unavailable – using rich fallback scene', err.message);
 
-    // Rich fallback that matches the visual style of the demo shader
+    // Rich fallback that matches the visual style of the demo shader and includes audio reactivity
     return {
-      wgsl: `// Fallback shader (Ollama not reachable)
+      wgsl: `// Fallback shader (Ollama not reachable) with audio reactivity
 struct Uniforms {
   time: f32,
   speed: f32,
   intensity: f32,
   hueShift: f32,
   density: f32,
+  audioLevel: f32,
+  audioBass: f32,
+  audioMid: f32,
+  audioTreble: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -165,11 +179,13 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   let st = vec2f(uv.x * 1.38, uv.y);
   var c = vec3f(0.0);
   let t = u.time * u.speed;
+  let react = 1.0 + u.audioBass * 1.6 + u.audioLevel * 0.9;
+  let distort = u.audioTreble * 0.07;
   for (var i = 1.0; i <= 7.0; i += 1.0) {
-    let p = st * (u.density / i) + vec2f(sin(t*0.2), cos(t*0.17));
+    let p = st * (u.density / i) + vec2f(sin(t*0.2), cos(t*0.17)) + vec2f(distort);
     let l = length(p);
     let hue = fract(u.hueShift + l*0.55 + t*0.09);
-    c += hue2rgb(hue) * (1.8 / (l * i * 1.6));
+    c += hue2rgb(hue) * (1.8 / (l * i * 1.6)) * react;
   }
   c = pow(c * u.intensity, vec3f(1.2));
   return vec4f(c, 1.0);
@@ -179,9 +195,13 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         { name: 'intensity', type: 'f32', default: 1.1, min: 0.4, max: 3.5 },
         { name: 'hueShift', type: 'f32', default: 0.65, min: 0.0, max: 1.0 },
         { name: 'density', type: 'f32', default: 6.5, min: 2.0, max: 14.0 },
+        { name: 'audioLevel', type: 'f32', default: 0.0, min: 0.0, max: 2.0 },
+        { name: 'audioBass', type: 'f32', default: 0.0, min: 0.0, max: 2.0 },
+        { name: 'audioMid', type: 'f32', default: 0.0, min: 0.0, max: 2.0 },
+        { name: 'audioTreble', type: 'f32', default: 0.0, min: 0.0, max: 2.0 },
       ],
-      jsLogic: '// Fallback – no extra JS logic',
-      title: description.includes('kelp') ? 'Kelp Forest' : 'Pastel Nebula',
+      jsLogic: '// Fallback – audio reactivity is driven by WebAudio FFT',
+      title: description.includes('kelp') ? 'Kelp Forest' : 'Audio Reactive Nebula',
     };
   }
 }

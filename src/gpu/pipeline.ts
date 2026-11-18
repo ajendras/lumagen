@@ -4,6 +4,7 @@
  * manages a dynamic uniform buffer + bind group. Supports arbitrary
  * uniforms supplied by the AI (assumes struct Uniforms { time: f32; ... }
  * with 16-byte alignment). Live updates are reflected instantly.
+ * Includes helper for WebAudio FFT data (audioBass, audioMid, audioTreble, audioLevel).
  */
 
 import { getActiveContext } from './context.js';
@@ -151,7 +152,8 @@ export function updateUniformBuffer(name: string, value: any): void {
 
 /**
  * Writes the entire uniform struct (including current time) to the GPU buffer.
- * Called every frame from the render loop.
+ * Called every frame from the render loop. Audio uniforms are updated via
+ * updateAudioReactData() before this call when reactivity is enabled.
  */
 export function writeUniforms(time: number): void {
   const ctx = getActiveContext();
@@ -174,6 +176,22 @@ export function getCurrentPipeline(): GPURenderPipeline | null {
 
 export function getCurrentBindGroup(): GPUBindGroup | null {
   return currentBindGroup;
+}
+
+/**
+ * Updates audio reactive uniforms from WebAudio FFT analysis. Called from
+ * the render loop in main.ts (editor) and the exported runtime.
+ */
+export function updateAudioReactData(
+  bass: number = 0,
+  mid: number = 0,
+  treble: number = 0,
+  level: number = 0
+): void {
+  updateUniformBuffer('audioBass', Math.max(0, Math.min(2.0, bass)));
+  updateUniformBuffer('audioMid', Math.max(0, Math.min(2.0, mid)));
+  updateUniformBuffer('audioTreble', Math.max(0, Math.min(2.0, treble)));
+  updateUniformBuffer('audioLevel', Math.max(0, Math.min(2.0, level)));
 }
 
 /**

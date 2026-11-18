@@ -72,6 +72,10 @@ Regenerate only lighting, motion or color via targeted prompts while preserving 
 📋 <b>Copy Blocks</b><br>
 One-click extraction of shader, JS or full HTML for quick iteration in any editor
 </td>
+<td width="33%" valign="top">
+🎤 <b>WebAudio Reactivity</b><br>
+Microphone or audio track FFT data drives bass/mid/treble/level uniforms for beat-reactive scenes
+</td>
 </tr>
 </table>
 
@@ -104,11 +108,13 @@ npm run export
 <html>
 <head>
   <script type="module">
-    import { startEditor, exportCurrentScene } from './src/main.ts';
+    import { startEditor, exportCurrentScene, enableAudioReact } from './src/main.ts';
     
     window.addEventListener('load', async () => {
       await startEditor();
       // Type a prompt like "gentle underwater kelp forest" and click Generate
+      // Enable audio reactivity:
+      // await enableAudioReact();
       // Export with one click:
       // exportCurrentScene();
     });
@@ -136,6 +142,19 @@ const scene = await generateScene(
 const pipeline = await createPipeline(scene.wgsl, scene.uniforms);
 // render loop automatically calls writeUniforms(time)
 ```
+
+### Enable WebAudio reactivity (microphone or track)
+
+```ts
+import { enableAudioReact } from './src/main.ts';
+
+// For live microphone input (requests permission)
+await enableAudioReact();
+
+// For audio track: use the track loader in the UI or call loadAudioTrack(file)
+```
+
+The analyzer computes real-time FFT and populates `audioLevel`, `audioBass`, `audioMid`, and `audioTreble` uniforms (0.0-2.0 range). Include them in your shader struct and use them to drive color, scale, distortion, or particle density for reactive visuals.
 
 ### Load a gallery template
 
@@ -241,7 +260,7 @@ Runs the Vitest suite in `tests/parser.test.ts`. Covers `parseLLMOutput()` edge 
 
 <!-- roadmap:start -->
 - [x] **v0.1.0** — first release: AI Scene Gen, Live Preview, One-File Export, Smart Controls
-- [ ] Add WebAudio reactive mode so scenes respond to microphone or track FFT data
+- [x] Add WebAudio reactive mode so scenes respond to microphone or track FFT data
 - [ ] Implement 'remix this part' button that sends current shader back to LLM with a targeted edit prompt
 - [ ] Add static analysis step that catches common WGSL errors before attempting to compile
 - [ ] Build public community gallery site where exported HTMLs can be uploaded and remixed
