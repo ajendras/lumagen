@@ -2,8 +2,9 @@
  * src/scene/parser.ts
  * Parses LLM markdown responses containing ```wgsl and ```json blocks into
  * a fully typed Scene object. Provides robust extraction with fallbacks,
- * strict validation of WGSL structure, and helpful console diagnostics.
- * Central source of truth for AI output → runtime scene conversion.
+ * normalizes uniform names to lowercase, ensures numeric values + range
+ * constraints, strict validation of WGSL structure, and helpful console
+ * diagnostics. Central source of truth for AI output → runtime scene conversion.
  */
 
 import type { Scene, Uniform } from '../main.js';
@@ -73,13 +74,18 @@ export function parseLLMOutput(raw: string): Scene {
       if (Array.isArray(parsed.uniforms) && parsed.uniforms.length > 0) {
         uniforms = parsed.uniforms
           .map((u: any) => {
-            const nameStr = String(u.name ?? 'unknown').trim();
+            const rawName = String(u.name ?? 'unknown').trim();
+            const nameStr = rawName.toLowerCase();
             let def = Number(u.default ?? 1.0);
             if (Number.isNaN(def)) def = 1.0;
             let mn = Number(u.min ?? 0.0);
             if (Number.isNaN(mn)) mn = 0.0;
             let mx = Number(u.max ?? 10.0);
             if (Number.isNaN(mx)) mx = 10.0;
+
+            // ensure default lies within [min, max]
+            def = Math.max(mn, Math.min(mx, def));
+
             return {
               name: nameStr,
               type: 'f32',
@@ -88,7 +94,7 @@ export function parseLLMOutput(raw: string): Scene {
               max: mx,
             } as Uniform;
           })
-          .filter((u: Uniform) => u.name.length > 1);
+          .filter((u: Uniform) => u.name.length > 0);
       }
       if (typeof parsed.jsLogic === 'string') jsLogic = parsed.jsLogic.trim() || jsLogic;
     } catch (err) {
@@ -102,7 +108,7 @@ export function parseLLMOutput(raw: string): Scene {
 
   const title = deriveTitleFromPrompt(raw || wgsl);
 
-  // Ensure time is always present at the front
+  // Ensure time is always present at the front (names are normalized to lowercase)
   if (!uniforms.some((u) => u.name === 'time')) {
     uniforms.unshift({ name: 'time', type: 'f32', default: 0, min: 0, max: 1000 });
   }
