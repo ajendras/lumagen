@@ -8,6 +8,7 @@
  */
 
 import type { Scene, Uniform } from '../main.js';
+import { validateWGSL } from '../gpu/pipeline.js';
 
 const DEFAULT_UNIFORMS: Uniform[] = [
   { name: 'speed', type: 'f32', default: 1.4, min: 0.3, max: 5.0 },
@@ -22,8 +23,9 @@ function extractCodeBlock(text: string, lang: string): string | null {
   return match?.[1]?.trim() ?? null;
 }
 
-function deriveTitleFromPrompt(text: string): string {
+export function deriveTitleFromPrompt(text: string): string {
   const lower = text.toLowerCase();
+
   if (lower.includes('bubble') || lower.includes('soap')) {
     return 'Bubble Realm';
   }
@@ -39,72 +41,94 @@ function deriveTitleFromPrompt(text: string): string {
   if (lower.includes('neon') || lower.includes('garden') || lower.includes('orb') || lower.includes('twilight')) {
     return 'Neon Garden';
   }
-  if (lower.includes('magma') || lower.includes('lava') || lower.includes('ember') || lower.includes('molten') || lower.includes('heat')) {
+  if (lower.includes('magma') || lower.includes('lava') || lower.includes('molten') || lower.includes('ember')) {
     return 'Magma Flow';
   }
-  if (lower.includes('aurora') || lower.includes('northern') || lower.includes('lights') || lower.includes('veil') || lower.includes('mint')) {
+  if (lower.includes('aurora') || lower.includes('northern') || lower.includes('veil')) {
     return 'Aurora Veil';
   }
-  if (lower.includes('crystal') || lower.includes('lattice') || lower.includes('refractive') || lower.includes('gem')) {
+  if (lower.includes('crystal') || lower.includes('lattice') || lower.includes('refractive')) {
     return 'Crystal Lattice';
   }
-  if (lower.includes('audio') || lower.includes('music') || lower.includes('beat') || lower.includes('reactive') || lower.includes('microphone') || lower.includes('sound')) {
+  // Only treat as audio-reactive title when the prompt clearly indicates it.
+  // This prevents false positives from uniform declarations like "audioLevel"
+  // that appear in almost every shader generated from the system prompt.
+  if (/(audio|music|beat|sound).*?(reactive|visualizer|fft)| (reactive|visualizer).*?(audio|music|beat)/i.test(lower)) {
     return 'Audio Reactive Dream';
   }
+
   return 'AI Dreamscape';
 }
 
+function parseUniforms(jsonData: any): Uniform[] {
+  if (!Array.isArray(jsonData?.uniforms)) {
+    return [...DEFAULT_UNIFORMS];
+  }
+
+  return jsonData.uniforms.map((u: any): Uniform => ({
+    name: String(u.name || 'param').toLowerCase(),
+    type: String(u.type || 'f32'),
+    default: typeof u.default === 'number' ? u.default : 1.0,
+    min: typeof u.min === 'number' ? u.min : 0.0,
+    max: typeof u.max === 'number' ? u.max : 10.0,
+  }));
+}
+
 export function parseLLMOutput(raw: string): Scene {
-  const wgsl = extractCodeBlock(raw, 'wgsl') ?? '// Placeholder shader – LLM output was incomplete';
+  if (!raw || typeof raw !== 'string' || raw.trim().length === 0) {
+    console.warn('Empty or invalid LLM output – using safe fallback');
+    return {
+      wgsl: '// fallback: empty input',
+      uniforms: [...DEFAULT_UNIFORMS],
+      jsLogic: '',
+      title: 'AI Dreamscape',
+    };
+  }
 
-  const jsonMatch = extractCodeBlock(raw, 'json');
+  const wgslBlock = extractCodeBlock(raw, 'wgsl');
+  const jsonBlock = extractCodeBlock(raw, 'json');
 
-  let uniforms: Uniform[] = [...DEFAULT_UNIFORMS];
-  let jsLogic = '';
-
-  if (jsonMatch) {
+  let jsonData: any = {};
+  if (jsonBlock) {
     try {
-      const parsed = JSON.parse(jsonMatch);
-      if (Array.isArray(parsed.uniforms)) {
-        uniforms = parsed.uniforms.map((u: any) => ({
-          name: String(u.name).toLowerCase().trim(),
-          type: 'f32' as const,
-          default: Number(u.default ?? 1.0),
-          min: Number(u.min ?? 0.0),
-          max: Number(u.max ?? 10.0),
-        })).filter((u: Uniform) => u.name.length > 0);
-      }
-      if (typeof parsed.jsLogic === 'string') jsLogic = parsed.jsLogic.trim();
-    } catch (parseErr) {
-      console.warn('Failed to parse JSON block from LLM output', parseErr);
+      jsonData = JSON.parse(jsonBlock);
+    } catch (e) {
+      console.warn('Failed to parse JSON metadata from LLM output', e);
     }
   }
 
-  const title = deriveTitleFromPrompt(raw);
-
-  const scene: Scene = { wgsl, uniforms, jsLogic, title };
+  const wgsl = wgslBlock || '// No WGSL shader was extracted from LLM output';
+  const uniforms = parseUniforms(jsonData);
+  const jsLogic = typeof jsonData.jsLogic === 'string' ? jsonData.jsLogic : '// AI-generated JS logic placeholder';
+  const title = typeof jsonData.title === 'string' && jsonData.title.trim().length > 0
+    ? jsonData.title.trim()
+    : deriveTitleFromPrompt(raw);
 
   if (!validateWGSL(wgsl)) {
     console.warn('Parsed WGSL failed validation – may not render correctly');
   }
 
+  const scene: Scene = { wgsl, uniforms, jsLogic, title };
+
+  console.log(
+    '%c📜 Parsed scene "%s" with %d uniforms',
+    'color:#a78bfa;font-weight:500',
+    title,
+    uniforms.length
+  );
+
   return scene;
 }
 
-export function validateWGSL(wgsl: string): boolean {
-  if (!wgsl || wgsl.length < 30) return false;
-  const lower = wgsl.toLowerCase();
-  const hasVertex = lower.includes('@vertex') || lower.includes('fn vs(');
-  const hasFragment = lower.includes('@fragment') || lower.includes('fn fs(');
-  const hasUniform = lower.includes('var<uniform>') || lower.includes('@binding(0)');
-  return hasVertex && hasFragment && hasUniform;
-}
+export function remixScene(base: Scene, overrides: Partial<Scene>): Scene {
+  if (!base?.wgsl) {
+    throw new Error('remixScene requires a valid base Scene with wgsl');
+  }
 
-export function remixScene(current: Scene, updates: Partial<Scene>): Scene {
   return {
-    wgsl: updates.wgsl ?? current.wgsl,
-    uniforms: updates.uniforms ?? current.uniforms,
-    jsLogic: updates.jsLogic ?? current.jsLogic ?? '',
-    title: current.title ?? updates.title ?? 'Remixed Scene',
+    wgsl: overrides.wgsl ?? base.wgsl,
+    uniforms: overrides.uniforms ?? base.uniforms ?? [],
+    jsLogic: overrides.jsLogic ?? base.jsLogic ?? '',
+    title: overrides.title ?? base.title ?? deriveTitleFromPrompt(overrides.wgsl ?? base.wgsl),
   };
 }

@@ -20,7 +20,8 @@ Rules:
 - Use organic motion, soft gradients, and gentle noise. Keep code under 110 lines.
 - If the prompt mentions music, beat, reactive, audio, visualizer, microphone or sound, include uniforms audioLevel, audioBass, audioMid, audioTreble (all f32, default 0.0, min 0.0, max 2.0). Use them in the shader to pulse colors, scale features, add distortion or drive intensity.
 - You can also handle remix requests when the user provides an existing shader and a specific edit instruction. In that case, modify ONLY the mentioned aspects (lighting, motion, colors, density, etc.) while preserving overall structure, entry points, uniform bindings and the rest of the code.
-- After the shader, output a JSON block with "uniforms" (array of {name, type:"f32", default, min, max}) and optional "jsLogic".
+- In the JSON block always include a short evocative "title" based on the prompt (e.g. "AI Dreamscape", "Kelp Forest").
+- After the shader, output a JSON block with "title", "uniforms" (array of {name, type:"f32", default, min, max}) and optional "jsLogic".
 - Only respond with the two code blocks. No explanations.
 
 Example output format:
@@ -35,6 +36,7 @@ struct Uniforms {
 
 \`\`\`json
 {
+  "title": "AI Dreamscape",
   "uniforms": [
     {"name":"speed","type":"f32","default":1.8,"min":0.4,"max":6.0},
     {"name":"intensity","type":"f32","default":1.2,"min":0.6,"max":3.5},
@@ -179,7 +181,8 @@ Rules for remix:
 - Apply ONLY the specific change described in the targeted edit instruction.
 - Preserve ALL other code, struct fields, entry points (vs/fs), uniform bindings, and overall style.
 - Keep the shader concise (<120 lines) and maintain the pastel/organic aesthetic.
-- After the wgsl block, ALWAYS output a complete JSON block containing the full updated uniforms array.
+- In the JSON block always include a short evocative "title".
+- After the wgsl block, ALWAYS output a complete JSON block containing the full updated uniforms array and title.
 - Output ONLY the two code blocks. No explanations or extra text.`;
 
   const userPrompt = `CURRENT FULL SHADER:
