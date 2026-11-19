@@ -180,12 +180,36 @@ console.log(`Exported ${calculateSize(html)} KB file`);
 
 ```ts
 import { remixScene } from './src/scene/parser.ts';
+import { remixPart } from './src/ai/client.ts';
+import { createPipeline } from './src/gpu/pipeline.ts';
+import { populateUniforms } from './src/ui/panel.ts';
 
 const updated = remixScene(currentScene, {
   wgsl: newLightingWGSL,           // only replace lighting
   uniforms: currentScene.uniforms  // keep existing controls
 });
 await createPipeline(updated.wgsl, updated.uniforms);
+```
+
+**AI-powered targeted remix (new)**
+
+The editor now includes a **"🎨 Remix this part"** button. It sends the *current* shader back to the LLM together with a targeted instruction (taken from the prompt textarea). The LLM is instructed to change only the requested aspect (e.g. motion, palette, density) while preserving structure, uniforms and entry points.
+
+```ts
+import { remixPart } from './src/ai/client.ts';
+
+const updatedScene = await remixPart(
+  currentScene,
+  'shift the palette toward cool blues, add gentle waves and increase particle density'
+);
+await createPipeline(updatedScene.wgsl, updatedScene.uniforms);
+populateUniforms(updatedScene.uniforms.map(u => ({
+  name: u.name,
+  value: u.default,
+  min: u.min ?? 0,
+  max: u.max ?? 10,
+  step: 0.01
+})));
 ```
 
 </details>
@@ -261,7 +285,7 @@ Runs the Vitest suite in `tests/parser.test.ts`. Covers `parseLLMOutput()` edge 
 <!-- roadmap:start -->
 - [x] **v0.1.0** — first release: AI Scene Gen, Live Preview, One-File Export, Smart Controls
 - [x] Add WebAudio reactive mode so scenes respond to microphone or track FFT data
-- [ ] Implement 'remix this part' button that sends current shader back to LLM with a targeted edit prompt
+- [x] Implement 'remix this part' button that sends current shader back to LLM with a targeted edit prompt
 - [ ] Add static analysis step that catches common WGSL errors before attempting to compile
 - [ ] Build public community gallery site where exported HTMLs can be uploaded and remixed
 - [ ] Support compute shaders and multi-pass rendering for more complex effects

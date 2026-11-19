@@ -24,149 +24,87 @@ function extractCodeBlock(text: string, lang: string): string | null {
 
 function deriveTitleFromPrompt(text: string): string {
   const lower = text.toLowerCase();
-  if (lower.includes('bubble')) {
+  if (lower.includes('bubble') || lower.includes('soap')) {
     return 'Bubble Realm';
   }
-  if (lower.includes('kelp') || lower.includes('sea') || lower.includes('ocean') || lower.includes('underwater')) {
+  if (lower.includes('kelp') || lower.includes('sea') || lower.includes('ocean') || lower.includes('underwater') || lower.includes('caustics')) {
     return 'Kelp Forest';
   }
-  if (lower.includes('particle') || lower.includes('star') || lower.includes('cosmic') || lower.includes('nebula')) {
+  if (lower.includes('particle') || lower.includes('star') || lower.includes('cosmic') || lower.includes('nebula') || lower.includes('dust')) {
     return 'Stellar Particles';
   }
-  if (lower.includes('fractal') || lower.includes('mandel') || lower.includes('bloom')) {
+  if (lower.includes('fractal') || lower.includes('mandel') || lower.includes('bloom') || lower.includes('recursive')) {
     return 'Fractal Bloom';
   }
-  if (lower.includes('neon') || lower.includes('garden')) {
+  if (lower.includes('neon') || lower.includes('garden') || lower.includes('orb') || lower.includes('twilight')) {
     return 'Neon Garden';
   }
-  if (lower.includes('lava') || lower.includes('magma') || lower.includes('fire') || lower.includes('ember')) {
+  if (lower.includes('magma') || lower.includes('lava') || lower.includes('ember') || lower.includes('molten') || lower.includes('heat')) {
     return 'Magma Flow';
   }
-  if (lower.includes('aurora') || lower.includes('veil') || lower.includes('light')) {
+  if (lower.includes('aurora') || lower.includes('northern') || lower.includes('lights') || lower.includes('veil') || lower.includes('mint')) {
     return 'Aurora Veil';
   }
-  if (lower.includes('crystal') || lower.includes('glass') || lower.includes('lattice')) {
+  if (lower.includes('crystal') || lower.includes('lattice') || lower.includes('refractive') || lower.includes('gem')) {
     return 'Crystal Lattice';
+  }
+  if (lower.includes('audio') || lower.includes('music') || lower.includes('beat') || lower.includes('reactive') || lower.includes('microphone') || lower.includes('sound')) {
+    return 'Audio Reactive Dream';
   }
   return 'AI Dreamscape';
 }
 
-/**
- * Parses raw LLM output into a validated Scene object.
- * Handles imperfect markdown, missing JSON, and provides rich defaults.
- * Throws only on completely unusable input.
- */
 export function parseLLMOutput(raw: string): Scene {
-  if (!raw || typeof raw !== 'string' || raw.trim().length < 10) {
-    throw new Error('parseLLMOutput() requires a non-empty string containing shader code');
-  }
+  const wgsl = extractCodeBlock(raw, 'wgsl') ?? '// Placeholder shader – LLM output was incomplete';
 
-  const wgslBlock = extractCodeBlock(raw, 'wgsl');
-  const jsonBlock = extractCodeBlock(raw, 'json');
+  const jsonMatch = extractCodeBlock(raw, 'json');
 
-  let wgsl = wgslBlock ?? '// Fallback placeholder shader - LLM did not return valid WGSL';
   let uniforms: Uniform[] = [...DEFAULT_UNIFORMS];
-  let jsLogic = '// No additional per-frame JS logic supplied by model';
+  let jsLogic = '';
 
-  if (jsonBlock) {
+  if (jsonMatch) {
     try {
-      const parsed = JSON.parse(jsonBlock);
-      if (Array.isArray(parsed.uniforms) && parsed.uniforms.length > 0) {
-        uniforms = parsed.uniforms
-          .map((u: any) => {
-            const rawName = String(u.name ?? 'unknown').trim();
-            const nameStr = rawName.toLowerCase();
-            let def = Number(u.default ?? 1.0);
-            if (Number.isNaN(def)) def = 1.0;
-            let mn = Number(u.min ?? 0.0);
-            if (Number.isNaN(mn)) mn = 0.0;
-            let mx = Number(u.max ?? 10.0);
-            if (Number.isNaN(mx)) mx = 10.0;
-
-            // ensure default lies within [min, max]
-            def = Math.max(mn, Math.min(mx, def));
-
-            return {
-              name: nameStr,
-              type: 'f32',
-              default: def,
-              min: mn,
-              max: mx,
-            } as Uniform;
-          })
-          .filter((u: Uniform) => u.name.length > 0);
+      const parsed = JSON.parse(jsonMatch);
+      if (Array.isArray(parsed.uniforms)) {
+        uniforms = parsed.uniforms.map((u: any) => ({
+          name: String(u.name).toLowerCase().trim(),
+          type: 'f32' as const,
+          default: Number(u.default ?? 1.0),
+          min: Number(u.min ?? 0.0),
+          max: Number(u.max ?? 10.0),
+        })).filter((u: Uniform) => u.name.length > 0);
       }
-      if (typeof parsed.jsLogic === 'string') jsLogic = parsed.jsLogic.trim() || jsLogic;
-    } catch (err) {
-      console.warn(
-        '%c⚠️ JSON metadata block could not be parsed. Using safe defaults.',
-        'color:#f472b6;font-weight:500',
-        err
-      );
+      if (typeof parsed.jsLogic === 'string') jsLogic = parsed.jsLogic.trim();
+    } catch (parseErr) {
+      console.warn('Failed to parse JSON block from LLM output', parseErr);
     }
   }
 
-  const title = deriveTitleFromPrompt(raw || wgsl);
+  const title = deriveTitleFromPrompt(raw);
 
-  // Ensure time is always present at the front (names are normalized to lowercase)
-  if (!uniforms.some((u) => u.name === 'time')) {
-    uniforms.unshift({ name: 'time', type: 'f32', default: 0, min: 0, max: 1000 });
-  }
-
-  const scene: Scene = {
-    wgsl,
-    uniforms,
-    jsLogic,
-    title,
-  };
+  const scene: Scene = { wgsl, uniforms, jsLogic, title };
 
   if (!validateWGSL(wgsl)) {
-    console.warn(
-      '%c⚠️ Generated WGSL failed structural validation. Pipeline creation may fail.',
-      'color:#f472b6'
-    );
-  } else {
-    console.log(
-      '%c✅ Parsed valid scene "%s" with %d uniforms',
-      'color:#67e8f9;font-weight:500',
-      title,
-      uniforms.length
-    );
+    console.warn('Parsed WGSL failed validation – may not render correctly');
   }
 
   return scene;
 }
 
-/**
- * Validates that a WGSL shader contains the expected full-screen triangle
- * entry points, uniform binding, and fragment output. Used both before
- * pipeline creation and as a safety gate after LLM generation.
- */
 export function validateWGSL(wgsl: string): boolean {
-  if (typeof wgsl !== 'string' || wgsl.trim().length < 60) {
-    return false;
-  }
-
-  const normalized = wgsl.toLowerCase();
-
-  const hasVertexEntry = /@vertex|fn vs\s*\(\s*@\s*builtin\(vertex_index\)|\bvs\s*\(\s*@builtin/.test(normalized);
-  const hasFragmentEntry = /@fragment|fn fs\s*\(\s*@\s*builtin\(position\)|\bfs\s*\(\s*@builtin/.test(normalized);
-  const hasUniformBlock = /var<uniform>/.test(normalized);
-  const hasPositionOutput = /@builtin\(position\)|->\s*@builtin\(position\)/.test(normalized);
-  const hasColorOutput = /@location\(0\)|->\s*@location\(0\)\s*vec4f/.test(normalized);
-
-  return hasVertexEntry && hasFragmentEntry && hasUniformBlock && hasPositionOutput && hasColorOutput;
+  if (!wgsl || wgsl.length < 30) return false;
+  const lower = wgsl.toLowerCase();
+  const hasVertex = lower.includes('@vertex') || lower.includes('fn vs(');
+  const hasFragment = lower.includes('@fragment') || lower.includes('fn fs(');
+  const hasUniform = lower.includes('var<uniform>') || lower.includes('@binding(0)');
+  return hasVertex && hasFragment && hasUniform;
 }
 
-/**
- * Creates a new Scene by selectively updating parts of an existing one.
- * Useful for the "partial remix" feature (lighting / motion only).
- */
-export function remixScene(base: Scene, patch: Partial<Scene> & { uniforms?: Uniform[] }): Scene {
+export function remixScene(current: Scene, updates: Partial<Scene>): Scene {
   return {
-    wgsl: patch.wgsl ?? base.wgsl,
-    uniforms: patch.uniforms ?? base.uniforms,
-    jsLogic: patch.jsLogic ?? base.jsLogic,
-    title: patch.title ?? base.title,
+    wgsl: updates.wgsl ?? current.wgsl,
+    uniforms: updates.uniforms ?? current.uniforms,
+    jsLogic: updates.jsLogic ?? current.jsLogic ?? '',
+    title: current.title ?? updates.title ?? 'Remixed Scene',
   };
 }

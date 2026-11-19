@@ -7,6 +7,7 @@
  */
 
 import type { Uniform, Scene } from '../main.js';
+import { parseLLMOutput } from '../scene/parser.js';
 
 const OLLAMA_BASE = 'http://localhost:11434';
 const MODEL = 'llama3.2';
@@ -18,6 +19,7 @@ Rules:
 - The shader must define: struct Uniforms { time: f32, speed: f32, intensity: f32, ... } with at least speed and intensity.
 - Use organic motion, soft gradients, and gentle noise. Keep code under 110 lines.
 - If the prompt mentions music, beat, reactive, audio, visualizer, microphone or sound, include uniforms audioLevel, audioBass, audioMid, audioTreble (all f32, default 0.0, min 0.0, max 2.0). Use them in the shader to pulse colors, scale features, add distortion or drive intensity.
+- You can also handle remix requests when the user provides an existing shader and a specific edit instruction. In that case, modify ONLY the mentioned aspects (lighting, motion, colors, density, etc.) while preserving overall structure, entry points, uniform bindings and the rest of the code.
 - After the shader, output a JSON block with "uniforms" (array of {name, type:"f32", default, min, max}) and optional "jsLogic".
 - Only respond with the two code blocks. No explanations.
 
@@ -46,87 +48,44 @@ struct Uniforms {
 }
 \`\`\``;
 
-async function queryOllama(prompt: string): Promise<string> {
-  const response = await fetch(\`\${OLLAMA_BASE}/api/generate\`, {
+async function queryOllamaWithSystem(prompt: string, systemPrompt: string = SYSTEM_PROMPT): Promise<string> {
+  const response = await fetch(`${OLLAMA_BASE}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: MODEL,
-      prompt: \`\${SYSTEM_PROMPT}\n\nUser description: \${prompt}\`,
+      prompt: `${systemPrompt}\n\n${prompt}`,
       stream: false,
-      temperature: 0.75,
+      temperature: 0.7,
       top_p: 0.9,
     }),
   });
 
   if (!response.ok) {
-    throw new Error(\`Ollama responded with status \${response.status}\`);
+    throw new Error(`Ollama responded with status ${response.status}`);
   }
 
   const data: { response: string } = await response.json();
   return data.response;
 }
 
+async function queryOllama(prompt: string): Promise<string> {
+  console.log(
+    '%c🪄 Sending prompt to local Ollama (llama3.2)...',
+    'color:#f472b6;font-weight:500',
+    prompt
+  );
+  return queryOllamaWithSystem(`User description: ${prompt}`);
+}
+
 function extractSceneFromLLMOutput(raw: string): Scene {
-  const wgslMatch = raw.match(/```wgsl\s*([\s\S]+?)```/i);
-  const jsonMatch = raw.match(/```json\s*([\s\S]+?)```/i);
-
-  const wgsl = wgslMatch?.[1]?.trim() ?? '// Placeholder shader – LLM output was incomplete';
-
-  let uniforms: Uniform[] = [
-    { name: 'speed', type: 'f32', default: 1.4, min: 0.3, max: 5.0 },
-    { name: 'intensity', type: 'f32', default: 1.1, min: 0.4, max: 3.5 },
-    { name: 'hueShift', type: 'f32', default: 0.65, min: 0.0, max: 1.0 },
-  ];
-
-  let jsLogic = '';
-
-  if (jsonMatch) {
-    try {
-      const jsonText = jsonMatch[1].trim();
-      const parsed = JSON.parse(jsonText);
-      if (Array.isArray(parsed.uniforms)) {
-        uniforms = parsed.uniforms.map((u: any) => ({
-          name: String(u.name).toLowerCase(),
-          type: 'f32',
-          default: Number(u.default ?? 1.0),
-          min: Number(u.min ?? 0.0),
-          max: Number(u.max ?? 10.0),
-        }));
-      }
-      if (typeof parsed.jsLogic === 'string') jsLogic = parsed.jsLogic;
-    } catch (parseErr) {
-      console.warn('Failed to parse JSON from LLM, using defaults', parseErr);
-    }
-  }
-
-  // Derive a friendly title from the prompt (fallback)
-  const titleGuess = raw.toLowerCase().includes('kelp')
-    ? 'Kelp Forest'
-    : raw.toLowerCase().includes('particle')
-    ? 'Stellar Particles'
-    : raw.toLowerCase().includes('audio') || raw.toLowerCase().includes('music') || raw.toLowerCase().includes('beat')
-    ? 'Audio Reactive Dream'
-    : 'AI Dreamscape';
-
-  return {
-    wgsl,
-    uniforms,
-    jsLogic,
-    title: titleGuess,
-  };
+  return parseLLMOutput(raw);
 }
 
 export async function generateScene(description: string): Promise<Scene> {
   if (!description || description.trim().length < 3) {
     throw new Error('Please provide a meaningful scene description (min 3 characters).');
   }
-
-  console.log(
-    '%c🪄 Sending prompt to local Ollama (llama3.2)...',
-    'color:#f472b6;font-weight:500',
-    description
-  );
 
   try {
     const llmText = await queryOllama(description);
@@ -203,5 +162,62 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       jsLogic: '// Fallback – audio reactivity is driven by WebAudio FFT',
       title: description.includes('kelp') ? 'Kelp Forest' : 'Audio Reactive Nebula',
     };
+  }
+}
+
+export async function remixPart(currentScene: Scene, instruction: string): Promise<Scene> {
+  if (!currentScene?.wgsl) {
+    throw new Error('No current scene shader to remix');
+  }
+  if (!instruction || instruction.trim().length < 3) {
+    throw new Error('Please provide a specific targeted edit instruction (min 3 characters).');
+  }
+
+  const remixSystem = `You are Lumagen, an expert at targeted shader editing for WebGPU generative art.
+Rules for remix:
+- You are given the FULL current WGSL shader.
+- Apply ONLY the specific change described in the targeted edit instruction.
+- Preserve ALL other code, struct fields, entry points (vs/fs), uniform bindings, and overall style.
+- Keep the shader concise (<120 lines) and maintain the pastel/organic aesthetic.
+- After the wgsl block, ALWAYS output a complete JSON block containing the full updated uniforms array.
+- Output ONLY the two code blocks. No explanations or extra text.`;
+
+  const userPrompt = `CURRENT FULL SHADER:
+\`\`\`wgsl
+${currentScene.wgsl}
+\`\`\`
+
+TARGETED EDIT INSTRUCTION: ${instruction}
+
+Return the remixed shader (only the requested part changed) followed by the complete JSON uniforms block.`;
+
+  console.log(
+    '%c🎨 Sending targeted remix request to Ollama...',
+    'color:#f472b6;font-weight:500',
+    instruction
+  );
+
+  try {
+    const llmText = await queryOllamaWithSystem(userPrompt, remixSystem);
+    let updated = extractSceneFromLLMOutput(llmText);
+
+    // Preserve original title and ensure we have uniforms
+    if (!updated.title || updated.title === 'AI Dreamscape') {
+      updated.title = currentScene.title || 'Remixed Scene';
+    }
+    if (updated.uniforms.length === 0) {
+      updated.uniforms = [...currentScene.uniforms];
+    }
+
+    console.log(
+      '%c✅ Targeted remix complete – %d uniforms',
+      'color:#67e8f9',
+      updated.uniforms.length
+    );
+
+    return updated;
+  } catch (err: any) {
+    console.error('Remix request failed', err);
+    throw new Error(`Remix failed: ${err.message}`);
   }
 }
