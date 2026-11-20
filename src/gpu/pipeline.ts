@@ -5,9 +5,11 @@
  * uniforms supplied by the AI (assumes struct Uniforms { time: f32; ... }
  * with 16-byte alignment). Live updates are reflected instantly.
  * Includes helper for WebAudio FFT data (audioBass, audioMid, audioTreble, audioLevel).
+ * Now runs static analysis (analyzeWGSL) before any compilation attempt.
  */
 
 import { getActiveContext } from './context.js';
+import { analyzeWGSL } from '../scene/parser.js';
 import type { Uniform } from '../main.js';
 
 let currentPipeline: GPURenderPipeline | null = null;
@@ -29,6 +31,17 @@ export async function createPipeline(
   }
 
   const { device, format } = ctx;
+
+  // Static analysis catches common WGSL errors early with helpful messages
+  // before we ever attempt to create a shader module or call getCompilationInfo().
+  const analysis = analyzeWGSL(wgsl);
+  if (!analysis.isValid) {
+    const errorMsg = analysis.errors.join('\n• ');
+    throw new Error(`Static WGSL analysis failed:\n• ${errorMsg}\n\nThe shader was not sent to the GPU compiler. Try regenerating or fixing the issues above.`);
+  }
+  if (analysis.warnings.length > 0) {
+    console.warn('WGSL analysis warnings:', analysis.warnings);
+  }
 
   // Compile shader
   const shaderModule = device.createShaderModule({
@@ -192,16 +205,4 @@ export function updateAudioReactData(
   updateUniformBuffer('audioMid', Math.max(0, Math.min(2.0, mid)));
   updateUniformBuffer('audioTreble', Math.max(0, Math.min(2.0, treble)));
   updateUniformBuffer('audioLevel', Math.max(0, Math.min(2.0, level)));
-}
-
-/**
- * Validates that the provided WGSL contains the expected entry points.
- * Used by the parser / AI flow before pipeline creation.
- */
-export function validateWGSL(wgsl: string): boolean {
-  if (!wgsl || wgsl.length < 30) return false;
-  const hasVS = /@vertex|fn vs/.test(wgsl);
-  const hasFS = /@fragment|fn fs/.test(wgsl);
-  const hasUniform = /var<uniform>/.test(wgsl);
-  return hasVS && hasFS && hasUniform;
 }

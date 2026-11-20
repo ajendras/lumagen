@@ -79,6 +79,9 @@ Microphone or audio track FFT data drives bass/mid/treble/level uniforms for bea
 </tr>
 </table>
 
+### 🛡️ Static WGSL Analysis
+The new static analysis step scans generated shaders for common pitfalls such as missing `@vertex`/`fn vs()`, missing `@fragment`/`fn fs()`, absent `struct Uniforms` or the required `@group(0) @binding(0) var<uniform> u: Uniforms;`, unbalanced braces, and use of `main()` instead of the expected entry points. It throws clear, actionable errors **before** the GPU attempts compilation.
+
 ## 📦 Installation
 
 **Requirements**
@@ -226,13 +229,29 @@ updateSliderValue('hueShift', 0.82); // UI stays in sync
 
 </details>
 
+<details><summary>Advanced: Static WGSL analysis</summary>
+
+```ts
+import { analyzeWGSL } from './src/scene/parser.ts';
+
+const analysis = analyzeWGSL(shaderCode);
+if (!analysis.isValid) {
+  console.error('Shader errors:', analysis.errors);
+  // e.g. "Missing vertex entry point", "Unbalanced braces", ...
+}
+```
+
+The analyzer runs automatically inside `parseLLMOutput()` and `createPipeline()`. It prevents cryptic GPU errors by catching issues early and giving actionable messages.
+
+</details>
+
 ## 🧩 Architecture
 
 ```mermaid
 flowchart TD
     Prompt[Prompt textarea] --> bindPromptHandler
     bindPromptHandler --> generateScene[ai/client.ts → queryOllama]
-    generateScene --> parseLLMOutput[scene/parser.ts]
+    generateScene --> parseLLMOutput[scene/parser.ts (with analyzeWGSL)]
     parseLLMOutput --> Scene[Scene {wgsl, uniforms, jsLogic, title}]
     Scene --> createPipeline[gpu/pipeline.ts]
     Scene --> populateUniforms[ui/panel.ts]
@@ -258,10 +277,10 @@ flowchart TD
 │   ├── ai/
 │   │   └── client.ts            # Ollama HTTP client + SYSTEM_PROMPT + fallback shader
 │   ├── scene/
-│   │   └── parser.ts            # parseLLMOutput(), validateWGSL(), remixScene()
+│   │   └── parser.ts            # parseLLMOutput(), analyzeWGSL(), deriveTitleFromPrompt(), validateWGSL()
 │   ├── gpu/
 │   │   ├── context.ts           # init(), resizeHandler(), GPUContext
-│   │   └── pipeline.ts          # createPipeline(), updateUniformBuffer(), writeUniforms()
+│   │   └── pipeline.ts          # createPipeline() (now runs static analysis first), updateUniformBuffer(), writeUniforms()
 │   ├── ui/
 │   │   └── panel.ts             # createUniformSlider(), bindPromptHandler(), populateUniforms(), gallery
 │   ├── exporter.ts              # exportToHTML() + self-contained runtime template
@@ -269,7 +288,7 @@ flowchart TD
 │   └── utils/
 │       └── minifier.ts          # minifyJS(), calculateSize()
 └── tests/
-    └── parser.test.ts           # Vitest suite for parseLLMOutput, uniform extraction, WGSL validation
+    └── parser.test.ts           # Vitest suite for parseLLMOutput, uniform extraction, title derivation, and the new analyzeWGSL()
 ```
 
 ## 🧪 Testing
@@ -278,7 +297,7 @@ flowchart TD
 npm test
 ```
 
-Runs the Vitest suite in `tests/parser.test.ts`. Covers `parseLLMOutput()` edge cases, uniform extraction from JSON blocks, title derivation, and `validateWGSL()` syntax/structure checks on mocked LLM responses.
+Runs the Vitest suite in `tests/parser.test.ts`. Covers `parseLLMOutput()` edge cases, uniform extraction from JSON blocks, title derivation, `validateWGSL()`, and the new `analyzeWGSL()` with test cases for missing entry points, missing uniform bindings, unbalanced braces, missing `time` field (warnings), and more.
 
 ## 📍 Roadmap
 
@@ -286,7 +305,7 @@ Runs the Vitest suite in `tests/parser.test.ts`. Covers `parseLLMOutput()` edge 
 - [x] **v0.1.0** — first release: AI Scene Gen, Live Preview, One-File Export, Smart Controls
 - [x] Add WebAudio reactive mode so scenes respond to microphone or track FFT data
 - [x] Implement 'remix this part' button that sends current shader back to LLM with a targeted edit prompt
-- [ ] Add static analysis step that catches common WGSL errors before attempting to compile
+- [x] Add static analysis step that catches common WGSL errors before attempting to compile
 - [ ] Build public community gallery site where exported HTMLs can be uploaded and remixed
 - [ ] Support compute shaders and multi-pass rendering for more complex effects
 - [ ] Add few-shot examples to the system prompt to improve shader quality on first try
