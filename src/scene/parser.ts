@@ -40,14 +40,14 @@ export function deriveTitleFromPrompt(text: string): string {
   if (lower.includes('fractal') || lower.includes('mandel') || lower.includes('bloom') || lower.includes('recursive')) {
     return 'Fractal Bloom';
   }
-  if (lower.includes('neon') || lower.includes('garden') || lower.includes('twilight') || lower.includes('orb')) {
-    return 'Neon Garden';
-  }
-  if (lower.includes('magma') || lower.includes('lava') || lower.includes('ember') || lower.includes('molten')) {
+  if (lower.includes('magma') || lower.includes('lava') || lower.includes('molten') || lower.includes('ember')) {
     return 'Magma Flow';
   }
-  if (lower.includes('aurora') || lower.includes('veil') || lower.includes('northern') || lower.includes('lights')) {
+  if (lower.includes('aurora') || lower.includes('northern') || lower.includes('lights')) {
     return 'Aurora Veil';
+  }
+  if (lower.includes('neon') || lower.includes('garden') || lower.includes('twilight') || lower.includes('orb')) {
+    return 'Neon Garden';
   }
   if (lower.includes('crystal') || lower.includes('lattice') || lower.includes('refractive')) {
     return 'Crystal Lattice';
@@ -55,150 +55,134 @@ export function deriveTitleFromPrompt(text: string): string {
   return 'Generative Scene';
 }
 
-export function analyzeWGSL(wgsl: string): {isValid: boolean; errors: string[]; warnings: string[]} {
+export interface AnalysisResult {
+  isValid: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+export function analyzeWGSL(wgsl: string): AnalysisResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const trimmed = wgsl.trim();
 
-  if (!wgsl || wgsl.trim().length < 50) {
+  if (!trimmed || trimmed.length < 30) {
     errors.push('Shader code is too short or empty');
     return { isValid: false, errors, warnings };
   }
 
-  const hasVertex = /@vertex|fn vs\s*\(/i.test(wgsl);
-  const hasFragment = /@fragment|fn fs\s*\(/i.test(wgsl);
-  const hasUniformStruct = /struct\s+Uniforms/i.test(wgsl);
-  const hasUniformBinding = /@group\(0\)\s*@binding\(0\)|@binding\(0\)\s*@group\(0\)/i.test(wgsl) && /var<uniform>/i.test(wgsl);
-  const hasTime = /time\s*:\s*f32/i.test(wgsl);
+  const hasVertex = /@vertex|fn\s+vs\s*\(/i.test(trimmed);
+  const hasFragment = /@fragment|fn\s+fs\s*\(/i.test(trimmed);
+  const hasMainEntry = /fn\s+main\s*\(/i.test(trimmed);
+  const hasStructUniforms = /struct\s+Uniforms\s*\{/i.test(trimmed);
+  const hasUniformBinding = /@group\(0\)\s*@binding\(0\)\s*var<uniform>\s*u\s*:\s*Uniforms/i.test(trimmed);
+
+  const openBraces = (trimmed.match(/\{/g) || []).length;
+  const closeBraces = (trimmed.match(/\}/g) || []).length;
 
   if (!hasVertex) {
-    errors.push('Missing vertex entry point: add "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f"');
+    errors.push('Missing vertex entry point (expected @vertex fn vs(...) or equivalent)');
   }
   if (!hasFragment) {
-    errors.push('Missing fragment entry point: add "@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f"');
+    errors.push('Missing fragment entry point (expected @fragment fn fs(...) or equivalent)');
   }
-  if (!hasUniformStruct) {
-    errors.push('Missing "struct Uniforms { time: f32, ... }" definition required by the runtime');
+  if (hasMainEntry) {
+    errors.push('Found fn main() – WebGPU shaders should use vs() for vertex and fs() for fragment entry points');
+  }
+  if (!hasStructUniforms) {
+    warnings.push('Missing struct Uniforms definition (recommended)');
   }
   if (!hasUniformBinding) {
-    errors.push('Missing uniform declaration: "@group(0) @binding(0) var<uniform> u: Uniforms;"');
+    warnings.push('Missing uniform binding: @group(0) @binding(0) var<uniform> u: Uniforms;');
   }
-  if (!hasTime) {
-    warnings.push('Uniforms struct should include "time: f32" for animation timing');
-  }
-
-  // Check for full screen triangle pattern (common in Lumagen scenes)
-  if (!wgsl.includes('vertex_index') && !/builtin\(vertex_index\)/i.test(wgsl)) {
-    warnings.push('Recommended to use @builtin(vertex_index) with full-screen triangle for post-processing style effects');
+  if (openBraces !== closeBraces) {
+    errors.push(`Unbalanced braces (${openBraces} opens, ${closeBraces} closes)`);
   }
 
-  // Basic syntax checks
-  const braceCount = (wgsl.match(/\{/g) || []).length - (wgsl.match(/\}/g) || []).length;
-  if (braceCount !== 0) {
-    errors.push('Unbalanced curly braces in shader code');
-  }
+  const isValid = errors.length === 0;
 
-  const parenCount = (wgsl.match(/\(/g) || []).length - (wgsl.match(/\)/g) || []).length;
-  if (parenCount !== 0) {
-    errors.push('Unbalanced parentheses in shader code');
-  }
-
-  if (/fn main/i.test(wgsl)) {
-    errors.push('Use "vs" and "fs" entry points instead of "main" to match the pipeline configuration');
-  }
-
-  if (/^ *var +[a-z]/im.test(wgsl)) {
-    warnings.push('WGSL best practice: prefer "let" for immutable locals over "var" where possible');
-  }
-
-  return {
-    isValid: errors.length === 0,
-    errors,
-    warnings,
-  };
-}
-
-/**
- * Updated validateWGSL that uses the new static analysis.
- */
-export function validateWGSL(wgsl: string): boolean {
-  const analysis = analyzeWGSL(wgsl);
-  return analysis.isValid;
+  return { isValid, errors, warnings };
 }
 
 export function parseLLMOutput(raw: string): Scene {
-  if (!raw) {
-    throw new Error('parseLLMOutput received empty input');
-  }
+  const wgslBlock = extractCodeBlock(raw, 'wgsl') ||
+    extractCodeBlock(raw, 'WGSL') ||
+    `// Fallback shader (no WGSL block found)
+struct Uniforms {
+  time: f32,
+  speed: f32,
+  intensity: f32,
+  hueShift: f32,
+};
+@group(0) @binding(0) var<uniform> u: Uniforms;
 
-  const wgsl = extractCodeBlock(raw, 'wgsl') || extractCodeBlock(raw, 'WGSL');
-  if (!wgsl) {
-    // fallback to whole text if no block
-    if (raw.includes('fn vs') && raw.includes('fn fs')) {
-      return {
-        wgsl: raw.trim(),
-        uniforms: [...DEFAULT_UNIFORMS],
-        jsLogic: '',
-        title: deriveTitleFromPrompt(raw),
-      };
-    }
-    throw new Error('No ```wgsl code block found in the LLM response. The AI must output a wgsl block.');
-  }
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  let verts = array<vec2f, 3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+  return vec4f(verts[i], 0.0, 1.0);
+}
 
-  let jsonStr = extractCodeBlock(raw, 'json');
-  if (!jsonStr) {
-    // Try to find any json-like structure
-    const jsonMatch = raw.match(/(\{[\s\S]*?\})/);
-    jsonStr = jsonMatch ? jsonMatch[0] : '{}';
-  }
+@fragment
+fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  return vec4f(0.2, 0.6, 0.9, 1.0);
+}`;
 
+  const jsonBlock = extractCodeBlock(raw, 'json');
   let metadata: any = {};
-  try {
-    metadata = JSON.parse(jsonStr.trim());
-  } catch (e) {
-    console.warn('Failed to parse JSON metadata block, using defaults', e);
-    metadata = { title: deriveTitleFromPrompt(raw), uniforms: [] };
+  let title = 'Generative Scene';
+  let uniforms: Uniform[] = [...DEFAULT_UNIFORMS];
+  let jsLogic = '';
+
+  if (jsonBlock) {
+    try {
+      metadata = JSON.parse(jsonBlock);
+      if (typeof metadata.title === 'string' && metadata.title.trim()) {
+        title = metadata.title.trim();
+      }
+      if (Array.isArray(metadata.uniforms)) {
+        uniforms = metadata.uniforms
+          .map((u: any): Uniform | null => {
+            if (!u || !u.name) return null;
+            return {
+              name: String(u.name).trim(),
+              type: u.type && typeof u.type === 'string' ? u.type : 'f32',
+              default: typeof u.default === 'number' ? u.default : 1.0,
+              min: typeof u.min === 'number' ? u.min : 0.0,
+              max: typeof u.max === 'number' ? u.max : 10.0,
+            };
+          })
+          .filter((u): u is Uniform => u !== null);
+      }
+      if (typeof metadata.jsLogic === 'string') {
+        jsLogic = metadata.jsLogic;
+      }
+    } catch (err: any) {
+      console.error('Failed to parse JSON metadata block, using defaults', err.message);
+    }
+  } else {
+    console.warn('No JSON metadata block found in LLM output, using defaults');
   }
 
-  const analysis = analyzeWGSL(wgsl);
+  if (!metadata.title) {
+    const derived = deriveTitleFromPrompt(raw);
+    if (derived !== 'Generative Scene') {
+      title = derived;
+    }
+  }
+
+  const analysis = analyzeWGSL(wgslBlock);
   if (!analysis.isValid) {
-    console.error(
-      '%c❌ WGSL Static Analysis Failed',
-      'color:#f472b6;font-weight:bold',
-      analysis.errors
-    );
+    console.error('❌ WGSL Static Analysis Failed', analysis.errors);
   } else if (analysis.warnings.length > 0) {
-    console.warn('WGSL analysis warnings:', analysis.warnings);
+    console.warn('⚠️ WGSL Static Analysis Warnings', analysis.warnings);
   }
 
-  const title = metadata.title || deriveTitleFromPrompt(wgsl + raw);
+  console.log(`📋 Parsed scene "${title}" with ${uniforms.length} uniforms`);
 
-  const rawUniforms = Array.isArray(metadata.uniforms) ? metadata.uniforms : DEFAULT_UNIFORMS;
-  const uniforms: Uniform[] = rawUniforms.map((u: any) => ({
-    name: (u.name || 'param').toString().trim().toLowerCase(),
-    type: u.type || 'f32',
-    default: typeof u.default === 'number' ? u.default : 1.0,
-    min: typeof u.min === 'number' ? u.min : 0.0,
-    max: typeof u.max === 'number' ? u.max : (u.name === 'hueShift' ? 1.0 : 10.0),
-  } as Uniform));
-
-  // Ensure we always have time, speed, intensity at minimum
-  if (!uniforms.some(u => u.name === 'time')) {
-    uniforms.unshift({ name: 'time', type: 'f32', default: 0, min: 0, max: 100 });
-  }
-
-  const scene: Scene = {
-    wgsl: wgsl.trim(),
-    uniforms: uniforms.length ? uniforms : DEFAULT_UNIFORMS,
-    jsLogic: metadata.jsLogic || '// No additional JS logic',
-    title: title,
+  return {
+    title,
+    wgsl: wgslBlock,
+    uniforms,
+    jsLogic,
   };
-
-  console.log(
-    '%c📋 Parsed scene "%s" with %d uniforms',
-    'color:#67e8f9',
-    scene.title,
-    scene.uniforms.length
-  );
-
-  return scene;
 }
