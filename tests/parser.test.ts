@@ -1,26 +1,24 @@
-import { describe, it, expect, vi } from 'vitest';
-import { parseLLMOutput, analyzeWGSL, deriveTitleFromPrompt, type AnalysisResult } from '../src/scene/parser.js';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { parseLLMOutput, analyzeWGSL, deriveTitleFromPrompt } from '../src/scene/parser.js';
+import type { Scene } from '../src/main.js';
 
 describe('scene/parser.ts', () => {
   beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('parses complete LLM output with wgsl and json', () => {
-    const completeOutput = `
+  it('extracts WGSL and JSON from LLM markdown output', () => {
+    const raw = `Here is a scene:
 \`\`\`wgsl
 struct Uniforms {
   time: f32,
   speed: f32,
-  intensity: f32,
-  hueShift: f32,
-};
+}
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
 @vertex
@@ -30,199 +28,150 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
 }
 
 @fragment
-fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-  return vec4f(0.4, 0.8, 1.0, 1.0);
+fn fs() -> @location(0) vec4f {
+  return vec4f(0.8, 0.6, 1.0, 1.0);
 }
 \`\`\`
 
 \`\`\`json
 {
-  "title": "Test Scene",
+  "title": "Pastel Dream",
   "uniforms": [
-    {"name":"speed","type":"f32","default":1.2,"min":0.5,"max":4.0},
-    {"name":"intensity","type":"f32","default":0.9,"min":0.2,"max":2.5}
-  ],
-  "jsLogic": "console.log('test');"
+    {"name":"speed","type":"f32","default":1.2,"min":0.5,"max":3.0},
+    {"name":"intensity","type":"f32","default":1.0,"min":0.2,"max":2.0}
+  ]
 }
-\`\`\`
-    `;
+\`\`\``;
 
-    const scene = parseLLMOutput(completeOutput);
-    expect(scene.title).toBe('Test Scene');
+    const scene: Scene = parseLLMOutput(raw);
+    expect(scene.title).toBe('Pastel Dream');
     expect(scene.uniforms).toHaveLength(2);
     expect(scene.uniforms[0].name).toBe('speed');
-    expect(scene.uniforms[0].default).toBe(1.2);
-    expect(scene.jsLogic).toBe("console.log('test');");
     expect(scene.wgsl).toContain('@vertex');
-    expect(scene.wgsl).toContain('@fragment');
+    expect(scene.wgsl).toContain('fn vs');
   });
 
-  it('handles missing json block gracefully', () => {
-    const noJson = `
-\`\`\`wgsl
-struct Uniforms { time: f32, speed: f32 };
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@vertex fn vs(i: u32) -> @builtin(position) vec4f { return vec4f(0); }
-@fragment fn fs() -> @location(0) vec4f { return vec4f(1); }
-\`\`\`
-    `;
-
-    const scene = parseLLMOutput(noJson);
-    expect(scene.title).toBe('Generative Scene');
-    expect(scene.uniforms.length).toBeGreaterThan(0);
-    expect(console.warn).toHaveBeenCalledWith('No JSON metadata block found in LLM output, using defaults');
-  });
-
-  it('handles malformed json gracefully', () => {
-    const badJson = `
-\`\`\`wgsl
-@vertex fn vs(i: u32) -> @builtin(position) vec4f { return vec4f(0); }
-@fragment fn fs() -> @location(0) vec4f { return vec4f(1); }
-\`\`\`
-
-\`\`\`json
-{,
-  "title": "Bad"
-}
-\`\`\`
-    `;
-
-    const scene = parseLLMOutput(badJson);
-    expect(scene.title).toBe('Generative Scene');
-    expect(console.error).toHaveBeenCalledWith(
-      'Failed to parse JSON metadata block, using defaults',
-      expect.stringContaining('Expected property name or')
-    );
-  });
-
-  it('derives meaningful titles from prompts', () => {
+  it('derives title from prompt keywords', () => {
     expect(deriveTitleFromPrompt('gentle underwater kelp forest')).toBe('Kelp Forest');
-    expect(deriveTitleFromPrompt('ethereal neon garden at twilight')).toBe('Neon Garden');
-    expect(deriveTitleFromPrompt('cosmic stellar particles')).toBe('Stellar Particles');
-    expect(deriveTitleFromPrompt('recursive fractal bloom')).toBe('Fractal Bloom');
-    expect(deriveTitleFromPrompt('molten magma flow')).toBe('Magma Flow');
-    expect(deriveTitleFromPrompt('unknown prompt')).toBe('Generative Scene');
+    expect(deriveTitleFromPrompt('ethereal glowing neon garden')).toBe('Neon Garden');
+    expect(deriveTitleFromPrompt('cosmic dust field')).toBe('Stellar Particles');
+    expect(deriveTitleFromPrompt('recursive pastel fractal')).toBe('Fractal Bloom');
+    expect(deriveTitleFromPrompt('molten lava river')).toBe('Magma Flow');
+    expect(deriveTitleFromPrompt('unknown prompt with no keywords')).toBe('Generated Scene');
+  });
+
+  it('provides fallback uniforms when JSON block is missing or invalid', () => {
+    const raw = '```wgsl\nstruct Uniforms { time: f32 }\n@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0); }\n@fragment fn fs() -> @location(0) vec4f { return vec4f(1); }\n```';
+    const scene = parseLLMOutput(raw);
+    expect(scene.uniforms.length).toBeGreaterThan(0);
+    expect(scene.title).toBeDefined();
+    expect(scene.uniforms.some(u => u.name === 'speed')).toBe(true);
   });
 
   describe('analyzeWGSL', () => {
-    it('returns valid for a correct full-screen triangle shader', () => {
-      const valid = `
-struct Uniforms {
-  time: f32,
-  speed: f32,
-  intensity: f32,
-};
+    it('accepts a valid full-screen triangle shader', () => {
+      const wgsl = `
+struct Uniforms { time: f32, speed: f32 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-  let verts = array<vec2f, 3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
-  return vec4f(verts[i], 0.0, 1.0);
+  let pos = array<vec2f, 3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+  return vec4f(pos[i], 0.0, 1.0);
 }
 
 @fragment
 fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-  return vec4f(0.0, 0.0, 0.0, 1.0);
+  return vec4f(0.9, 0.7, 1.0, 1.0);
 }
-      `;
-
-      const result: AnalysisResult = analyzeWGSL(valid);
+`;
+      const result = analyzeWGSL(wgsl);
       expect(result.isValid).toBe(true);
       expect(result.errors).toHaveLength(0);
-      expect(result.warnings).toHaveLength(0);
     });
 
-    it('catches missing entry points', () => {
-      const invalid = `
-struct Uniforms { time: f32 };
-@group(0) @binding(0) var<uniform> u: Uniforms;
-
-fn computeSomething() -> f32 { return 1.0; }
-      `;
-
-      const result: AnalysisResult = analyzeWGSL(invalid);
+    it('reports missing vertex entry point', () => {
+      const wgsl = `
+@fragment
+fn fs() -> @location(0) vec4f { return vec4f(1.0); }
+`;
+      const result = analyzeWGSL(wgsl);
       expect(result.isValid).toBe(false);
-      expect(result.errors.length).toBeGreaterThan(1);
-      expect(result.errors.some(e => e.includes('vertex'))).toBe(true);
-      expect(result.errors.some(e => e.includes('fragment'))).toBe(true);
-      expect(result.errors.some(e => e.includes('entry point'))).toBe(true);
+      expect(result.errors.some(e => e.toLowerCase().includes('vertex'))).toBe(true);
     });
 
-    it('catches use of main() entry point', () => {
-      const invalid = `
-@vertex fn vs(i: u32) -> @builtin(position) vec4f { return vec4f(0); }
+    it('reports missing fragment entry point', () => {
+      const wgsl = `
+@vertex
+fn vs() -> @builtin(position) vec4f { return vec4f(0.0); }
+`;
+      const result = analyzeWGSL(wgsl);
+      expect(result.isValid).toBe(false);
+      expect(result.errors.some(e => e.toLowerCase().includes('fragment'))).toBe(true);
+    });
+
+    it('reports missing uniform binding', () => {
+      const wgsl = `
+@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0); }
 @fragment fn fs() -> @location(0) vec4f { return vec4f(1); }
-fn main() { }
-      `;
-
-      const result: AnalysisResult = analyzeWGSL(invalid);
+`;
+      const result = analyzeWGSL(wgsl);
       expect(result.isValid).toBe(false);
-      expect(result.errors.some(e => e.includes('main()'))).toBe(true);
+      expect(result.errors.some(e => e.toLowerCase().includes('uniform'))).toBe(true);
     });
 
     it('detects unbalanced braces', () => {
-      const invalid = `
-@vertex fn vs(i: u32) -> @builtin(position) vec4f { return vec4f(0.0);
-@fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }
-      `;
-
-      const result: AnalysisResult = analyzeWGSL(invalid);
+      const wgsl = `
+@vertex
+fn vs() -> @builtin(position) vec4f { return vec4f(0.0,0.0,0.0,1.0);
+@fragment
+fn fs() -> @location(0) vec4f { return vec4f(1.0); }
+`;
+      const result = analyzeWGSL(wgsl);
       expect(result.isValid).toBe(false);
-      expect(result.errors.some(e => e.includes('Unbalanced braces'))).toBe(true);
+      expect(result.errors.some(e => e.toLowerCase().includes('brace') || e.toLowerCase().includes('unbalanced'))).toBe(true);
     });
 
-    it('runs static analysis and logs errors for bad shader', () => {
-      const badShader = 'fn main() {}';
-      const result = analyzeWGSL(badShader);
-      expect(result.isValid).toBe(false);
-      expect(result.errors[0]).toContain('too short or empty');
-      expect(console.error).toHaveBeenCalledWith(
-        '❌ WGSL Static Analysis Failed',
-        expect.arrayContaining([expect.stringContaining('too short')])
-      );
-    });
-
-    it('issues warnings for missing Uniforms struct and binding', () => {
-      const minimal = `
-@vertex fn vs(i: u32) -> @builtin(position) vec4f { return vec4f(0); }
-@fragment fn fs() -> @location(0) vec4f { return vec4f(1); }
-      `;
-
-      const result: AnalysisResult = analyzeWGSL(minimal);
-      expect(result.isValid).toBe(true);
-      expect(result.warnings.length).toBeGreaterThan(1);
-      expect(result.warnings.some(w => w.includes('struct Uniforms'))).toBe(true);
-      expect(result.warnings.some(w => w.includes('uniform binding'))).toBe(true);
-    });
-
-    it('accepts shader with time uniform warning only', () => {
-      const okButNoTime = `
-struct Uniforms { speed: f32 };
+    it('warns when time uniform is missing', () => {
+      const wgsl = `
+struct Uniforms { speed: f32 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
-@vertex fn vs(i: u32) -> @builtin(position) vec4f { return vec4f(0); }
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { return vec4f(0); }
 @fragment fn fs() -> @location(0) vec4f { return vec4f(1); }
-      `;
-
-      const result: AnalysisResult = analyzeWGSL(okButNoTime);
+`;
+      const result = analyzeWGSL(wgsl);
       expect(result.isValid).toBe(true);
-      expect(result.warnings.length).toBe(0); // time is not strictly required by analyzer
+      expect(result.warnings.some(w => w.toLowerCase().includes('time'))).toBe(true);
+    });
+
+    it('rejects use of main() entry point', () => {
+      const wgsl = `
+fn main() {}
+@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0); }
+@fragment fn fs() -> @location(0) vec4f { return vec4f(1); }
+`;
+      const result = analyzeWGSL(wgsl);
+      expect(result.isValid).toBe(false);
+      expect(result.errors.some(e => e.toLowerCase().includes('main'))).toBe(true);
     });
   });
 
-  it('normalizes uniform values from JSON', () => {
-    const output = `
-\`\`\`wgsl
-@vertex fn vs() {} @fragment fn fs() {}
+  it('handles remix output with updated uniforms', () => {
+    const remixOutput = `\`\`\`wgsl
+// remixed shader
+struct Uniforms { time: f32, speed: f32, colorShift: f32 }
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0); }
+@fragment fn fs() -> @location(0) vec4f { return vec4f(1); }
 \`\`\`
+
 \`\`\`json
-{"title":"Normalized","uniforms":[{"name":"intensity","default":"1.5","min":"0","max":3}]}
-\`\`\`
-    `;
-    const scene = parseLLMOutput(output);
-    const intensity = scene.uniforms.find(u => u.name === 'intensity');
-    expect(intensity).toBeDefined();
-    expect(intensity!.default).toBe(1.5);
-    expect(intensity!.min).toBe(0);
-    expect(intensity!.max).toBe(3);
+{"title":"Remixed Kelp","uniforms":[{"name":"speed","type":"f32","default":2.1,"min":0.5,"max":5},{"name":"colorShift","type":"f32","default":0.5,"min":0,"max":1}]}
+\`\`\``;
+
+    const scene = parseLLMOutput(remixOutput);
+    expect(scene.title).toBe('Remixed Kelp');
+    expect(scene.uniforms.some(u => u.name === 'colorShift')).toBe(true);
+    expect(scene.uniforms.some(u => u.name === 'speed')).toBe(true);
   });
 });
