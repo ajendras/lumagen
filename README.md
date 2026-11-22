@@ -77,6 +77,14 @@ One-click extraction of shader, JS or full HTML for quick iteration in any edito
 Microphone or audio track FFT data drives bass/mid/treble/level uniforms for beat-reactive scenes
 </td>
 </tr>
+<tr>
+<td width="33%" valign="top">
+🗃️ <b>Community Gallery</b><br>
+Upload exported HTMLs to a persistent local community gallery (localStorage). Load, inspect and remix community scenes instantly.
+</td>
+<td></td>
+<td></td>
+</tr>
 </table>
 
 ### 🛡️ Static WGSL Analysis
@@ -179,6 +187,37 @@ const html = await exportToHTML(scene, 'My Neon Garden');
 console.log(`Exported ${calculateSize(html)} KB file`);
 ```
 
+### Community Gallery (new)
+
+Exported HTML files now embed rich metadata. Upload them via the **📤 Upload HTML** button (added next to Generate/Remix) to add to your persistent community gallery (localStorage). Uploaded scenes can be loaded and remixed immediately.
+
+```ts
+import { uploadToCommunity, getCommunityScenes } from './src/gallery.ts';
+import { parseExportedHTML } from './src/scene/parser.ts';
+
+// Upload flow (triggered by UI button)
+const fileInput = document.createElement('input');
+fileInput.type = 'file';
+fileInput.accept = '.html';
+fileInput.onchange = async (e) => {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  if (file) {
+    const scene = await uploadToCommunity(file);
+    console.log('Added to community:', scene.title);
+  }
+};
+
+// Browse community scenes
+const community = getCommunityScenes();
+console.log('Community has', community.length, 'scenes');
+
+// Load & remix a community scene (also available via window.loadCommunityScene(0))
+const scene = community[0];
+await createPipeline(scene.wgsl, scene.uniforms);
+```
+
+The community gallery makes Lumagen a shareable ecosystem: export a scene, send the HTML to a friend, they upload it and remix the shader with AI.
+
 <details><summary>Advanced: Partial remix while preserving uniforms</summary>
 
 ```ts
@@ -259,10 +298,11 @@ flowchart TD
     RenderLoop --> writeUniforms[gpu/pipeline.ts]
     Scene --> exportToHTML[exporter.ts + minifier.ts]
     gallery.ts --> populateMiniGallery & populateFullGallery
+    gallery.ts --> uploadToCommunity & parseExportedHTML
     style Scene fill:#f9e7f0,stroke:#f472b6
 ```
 
-`main.ts` bootstraps the WebGPU context, UI panels and render loop. Natural-language prompts flow through the Ollama client and parser into a typed `Scene`. The GPU layer compiles the WGSL and maintains a dynamic uniform buffer. The exporter inlines everything into a self-contained HTML.
+`main.ts` bootstraps the WebGPU context, UI panels and render loop. Natural-language prompts flow through the Ollama client and parser into a typed `Scene`. The GPU layer compiles the WGSL and maintains a dynamic uniform buffer. The exporter inlines everything into a self-contained HTML. Community uploads are parsed by `parseExportedHTML()` (looks for embedded JSON metadata) and persisted via localStorage.
 
 ## 📁 Project structure
 
@@ -273,22 +313,22 @@ flowchart TD
 ├── tailwind.config.ts           # Pastel palette (#f472b6, #67e8f9), Nunito font, rounded-3xl
 ├── index.html                   # Entry with Tailwind and root canvas
 ├── src/
-│   ├── main.ts                  # Bootstrap, startEditor(), exportCurrentScene(), render loop
+│   ├── main.ts                  # Bootstrap, startEditor(), exportCurrentScene(), render loop, community upload button
 │   ├── ai/
 │   │   └── client.ts            # Ollama HTTP client + SYSTEM_PROMPT + fallback shader
 │   ├── scene/
-│   │   └── parser.ts            # parseLLMOutput(), analyzeWGSL(), deriveTitleFromPrompt(), validateWGSL()
+│   │   └── parser.ts            # parseLLMOutput(), analyzeWGSL(), deriveTitleFromPrompt(), parseExportedHTML()
 │   ├── gpu/
 │   │   ├── context.ts           # init(), resizeHandler(), GPUContext
 │   │   └── pipeline.ts          # createPipeline() (now runs static analysis first), updateUniformBuffer(), writeUniforms()
 │   ├── ui/
 │   │   └── panel.ts             # createUniformSlider(), bindPromptHandler(), populateUniforms(), gallery
-│   ├── exporter.ts              # exportToHTML() + self-contained runtime template
-│   ├── gallery.ts               # galleryTemplates array + getRandomTemplate(), findTemplateByTitle()
+│   ├── exporter.ts              # exportToHTML() + self-contained runtime template (now embeds JSON metadata)
+│   ├── gallery.ts               # galleryTemplates array + getRandomTemplate(), findTemplateByTitle() + community upload/storage
 │   └── utils/
 │       └── minifier.ts          # minifyJS(), calculateSize()
 └── tests/
-    └── parser.test.ts           # Vitest suite for parseLLMOutput, uniform extraction, title derivation, and the new analyzeWGSL()
+    └── parser.test.ts           # Vitest suite for parseLLMOutput, uniform extraction, title derivation, analyzeWGSL() and parseExportedHTML()
 ```
 
 ## 🧪 Testing
@@ -297,7 +337,7 @@ flowchart TD
 npm test
 ```
 
-Runs the Vitest suite in `tests/parser.test.ts`. Covers `parseLLMOutput()` edge cases, uniform extraction from JSON blocks, title derivation, `validateWGSL()`, and the new `analyzeWGSL()` with test cases for missing entry points, missing uniform bindings, unbalanced braces, missing `time` field (warnings), and more.
+Runs the Vitest suite in `tests/parser.test.ts`. Covers `parseLLMOutput()` edge cases, uniform extraction from JSON blocks, title derivation, `validateWGSL()`, the new `analyzeWGSL()` with test cases for missing entry points, missing uniform bindings, unbalanced braces, missing `time` field (warnings), and the new `parseExportedHTML()` for community uploads.
 
 ## 📍 Roadmap
 
@@ -306,7 +346,7 @@ Runs the Vitest suite in `tests/parser.test.ts`. Covers `parseLLMOutput()` edge 
 - [x] Add WebAudio reactive mode so scenes respond to microphone or track FFT data
 - [x] Implement 'remix this part' button that sends current shader back to LLM with a targeted edit prompt
 - [x] Add static analysis step that catches common WGSL errors before attempting to compile
-- [ ] Build public community gallery site where exported HTMLs can be uploaded and remixed
+- [x] Build public community gallery site where exported HTMLs can be uploaded and remixed
 - [ ] Support compute shaders and multi-pass rendering for more complex effects
 - [ ] Add few-shot examples to the system prompt to improve shader quality on first try
 - [ ] Create undo/redo stack for prompt iterations and parameter adjustments

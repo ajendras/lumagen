@@ -4,16 +4,22 @@
  * Each entry includes a natural-language prompt optimized for the Lumagen
  * system prompt, a pastel thumbnail accent, emoji accent and sensible
  * uniform ranges that produce beautiful results instantly.
+ * 
+ * Extended with a public community gallery: users can upload exported
+ * HTML files (which embed JSON metadata). Scenes are persisted in
+ * localStorage so the gallery survives page refreshes and supports
+ * instant loading + AI-powered remixing.
  */
 
-import type { Uniform } from './main.js';
+import type { Scene } from './main.js';
+import { parseExportedHTML } from './scene/parser.js';
 
 export interface GalleryTemplate {
   title: string;
   prompt: string;
   thumbnailColor: string;
   emoji: string;
-  initialUniforms: Uniform[];
+  initialUniforms: any[];
 }
 
 export const galleryTemplates: GalleryTemplate[] = [
@@ -136,4 +142,102 @@ export function getRandomTemplate(): GalleryTemplate {
 export function findTemplateByTitle(title: string): GalleryTemplate | undefined {
   const normalized = title.toLowerCase().trim();
   return galleryTemplates.find((t) => t.title.toLowerCase() === normalized);
+}
+
+// ---------------------------------------------------------------------------
+// COMMUNITY GALLERY
+// ---------------------------------------------------------------------------
+
+let communityScenes: Scene[] = [];
+
+function loadCommunityFromStorage(): void {
+  try {
+    const saved = localStorage.getItem('lumagenCommunity');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      communityScenes = parsed.map((s: any) => ({
+        ...s,
+        uniforms: s.uniforms || []
+      }));
+    }
+  } catch (e) {
+    console.warn('Could not load community gallery from localStorage');
+    communityScenes = [];
+  }
+}
+
+function saveCommunityToStorage(): void {
+  try {
+    localStorage.setItem('lumagenCommunity', JSON.stringify(communityScenes));
+  } catch (e) {
+    console.warn('Could not persist community gallery');
+  }
+}
+
+/**
+ * Returns all community-uploaded scenes (newest first). Loads from
+ * localStorage on first call.
+ */
+export function getCommunityScenes(): Scene[] {
+  if (communityScenes.length === 0) {
+    loadCommunityFromStorage();
+  }
+  return [...communityScenes];
+}
+
+/**
+ * Parses an exported Lumagen HTML file (looks for embedded lumagen-meta
+ * JSON first, falls back to regex extraction) and adds it to the community
+ * gallery. Persisted via localStorage. Returns the parsed Scene so it can
+ * be loaded immediately for remixing.
+ */
+export async function uploadToCommunity(file: File): Promise<Scene> {
+  if (!file.name.toLowerCase().endsWith('.html')) {
+    throw new Error('Please select a Lumagen exported .html file');
+  }
+  if (file.size > 500_000) {
+    throw new Error('File too large – Lumagen exports are usually < 100 KB');
+  }
+
+  const html = await file.text();
+  const scene = parseExportedHTML(html);
+
+  // Give it a community prefix so it is distinguishable
+  scene.title = (scene.title || 'Untitled').replace(/ \(Community\)$/, '') + ' (Community)';
+
+  communityScenes.unshift(scene); // newest on top
+  if (communityScenes.length > 30) {
+    communityScenes.length = 30; // keep memory reasonable
+  }
+
+  saveCommunityToStorage();
+
+  console.log(
+    '%c📤 Community upload successful – %s (%d uniforms)',
+    'color:#67e8f9;font-weight:600',
+    scene.title,
+    scene.uniforms.length
+  );
+
+  return scene;
+}
+
+/**
+ * Loads a community scene by index (0 = most recent). Useful for
+ * "remix this community scene" flows.
+ */
+export function loadCommunityScene(index: number): Scene {
+  if (communityScenes.length === 0) loadCommunityFromStorage();
+  if (index < 0 || index >= communityScenes.length) {
+    throw new Error(`Community index ${index} out of bounds (0..${communityScenes.length - 1})`);
+  }
+  return { ...communityScenes[index]! };
+}
+
+/**
+ * Clears the community gallery (for testing / reset).
+ */
+export function clearCommunityGallery(): void {
+  communityScenes = [];
+  localStorage.removeItem('lumagenCommunity');
 }

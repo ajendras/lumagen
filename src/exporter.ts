@@ -8,6 +8,9 @@
  *   • WebAudio reactive mode (mic + track support with FFT analysis)
  * All JS is minified before embedding. The resulting file runs instantly
  * when opened in any WebGPU-capable browser.
+ * 
+ * Now embeds a JSON metadata block (lumagen-meta) so the community gallery
+ * can parse uploaded HTMLs and extract title, wgsl, uniforms for instant remixing.
  */
 
 import type { Scene, Uniform } from './main.js';
@@ -72,6 +75,10 @@ const EXPORT_TEMPLATE = `<!DOCTYPE html>
 </div>
 
 <div class="info">exported from lumagen • {{SIZE}}kb • reactive</div>
+
+<script id="lumagen-meta" type="application/json">
+{{META}}
+</script>
 
 <script>
 {{MINIFIED_JS}}
@@ -356,6 +363,7 @@ function buildRuntimeJS(scene: Scene, title: string): string {
  * Returns a complete standalone HTML file ready for distribution.
  * The shader, uniforms and render loop are fully inlined. WebAudio
  * reactivity (mic + track) is included when audio uniforms are present.
+ * A lumagen-meta JSON block is embedded for community gallery parsing.
  */
 export async function exportToHTML(scene: Scene, title: string = 'Lumagen Scene'): Promise<string> {
   if (!scene || !scene.wgsl) {
@@ -374,8 +382,16 @@ export async function exportToHTML(scene: Scene, title: string = 'Lumagen Scene'
     runtime = runtime.replace(/\s+/g, ' ').trim();
   }
 
+  const meta = JSON.stringify({
+    title: safeTitle,
+    wgsl: scene.wgsl,
+    uniforms: scene.uniforms,
+    jsLogic: scene.jsLogic || '// Community remix ready'
+  }, null, 2);
+
   let html = EXPORT_TEMPLATE
     .replace(/\{\{TITLE\}\}/g, safeTitle)
+    .replace('{{META}}', meta)
     .replace('{{MINIFIED_JS}}', runtime);
 
   // Final size annotation
@@ -383,7 +399,7 @@ export async function exportToHTML(scene: Scene, title: string = 'Lumagen Scene'
   html = html.replace('{{SIZE}}', String(sizeKB));
 
   console.log(
-    '%c📦 Exported standalone HTML — %d KB — %s (with WebAudio reactivity)',
+    '%c📦 Exported standalone HTML — %d KB — %s (with WebAudio reactivity + community metadata)',
     'color:#67e8f9;font-weight:600',
     sizeKB,
     safeTitle
