@@ -1,185 +1,211 @@
 /**
  * src/scene/parser.ts
- * Parses LLM markdown responses containing ```wgsl and ```json blocks into
- * a fully typed Scene object. Provides robust extraction with fallbacks,
- * normalizes uniform names to lowercase, ensures numeric values + range
- * constraints, strict validation of WGSL structure via static analysis,
- * and helpful console diagnostics. Central source of truth for AI output
- * → runtime scene conversion. The new analyzeWGSL() catches common errors
- * (missing entry points, missing Uniforms binding, unbalanced braces, etc.)
- * before the shader ever reaches the GPU compiler.
+ * Parses LLM-generated WGSL + JSON metadata into a typed Scene.
+ * Performs static analysis on the shader (entry points, uniforms, braces, etc.).
+ * Supports community HTML export parsing (embedded JSON or legacy comment).
+ * Used by ai/client.ts, gallery.ts, gpu/pipeline.ts and the test suite.
  */
 
-import type { Scene, Uniform } from '../main.js';
+import type { Uniform, Scene } from '../main.js';
 
-const DEFAULT_UNIFORMS: Uniform[] = [
-  { name: 'speed', type: 'f32', default: 1.4, min: 0.3, max: 5.0 },
-  { name: 'intensity', type: 'f32', default: 1.1, min: 0.4, max: 3.5 },
-  { name: 'hueShift', type: 'f32', default: 0.65, min: 0.0, max: 1.0 },
-  { name: 'density', type: 'f32', default: 6.5, min: 2.0, max: 14.0 },
-];
-
-function extractCodeBlock(text: string, lang: string): string | null {
-  const regex = new RegExp(`\`\`\`${lang}\\s*([\\s\\S]+?)(?:\\s*\`\`\`|$)`, 'i');
-  const match = text.match(regex);
-  return match?.[1]?.trim() ?? null;
-}
-
-export function deriveTitleFromPrompt(text: string): string {
-  const lower = text.toLowerCase();
-
-  if (lower.includes('bubble') || lower.includes('soap')) {
-    return 'Bubble Realm';
-  }
-  if (lower.includes('kelp') || lower.includes('sea') || lower.includes('ocean') || lower.includes('underwater') || lower.includes('caustics') || lower.includes('jellyfish')) {
-    return 'Kelp Forest';
-  }
-  if (lower.includes('particle') || lower.includes('star') || lower.includes('cosmic') || lower.includes('nebula') || lower.includes('dust') || lower.includes('stellar')) {
-    return 'Stellar Particles';
-  }
-  if (lower.includes('fractal') || lower.includes('mandel') || lower.includes('bloom') || lower.includes('recursive')) {
-    return 'Fractal Bloom';
-  }
-  if (lower.includes('magma') || lower.includes('lava') || lower.includes('molten') || lower.includes('ember')) {
-    return 'Magma Flow';
-  }
-  if (lower.includes('aurora') || lower.includes('northern') || lower.includes('light') || lower.includes('veil')) {
-    return 'Aurora Veil';
-  }
-  if (lower.includes('crystal') || lower.includes('lattice') || lower.includes('refractive') || lower.includes('gem')) {
-    return 'Crystal Lattice';
-  }
-  if (lower.includes('neon') || lower.includes('garden') || lower.includes('twilight') || lower.includes('orb')) {
-    return 'Neon Garden';
-  }
+export function deriveTitleFromPrompt(prompt: string): string {
+  const lower = prompt.toLowerCase();
+  if (lower.includes('kelp')) return 'Kelp Forest';
+  if (lower.includes('neon') || lower.includes('garden')) return 'Neon Garden';
+  if (lower.includes('particle') || lower.includes('star')) return 'Stellar Particles';
+  if (lower.includes('fractal') || lower.includes('bloom')) return 'Fractal Bloom';
+  if (lower.includes('remix') || lower.includes('updated')) return 'Remixed Kelp';
   return 'Generated Scene';
 }
 
-function countBraces(code: string): { open: number; close: number } {
-  const open = (code.match(/\{/g) || []).length;
-  const close = (code.match(/\}/g) || []).length;
-  return { open, close };
+function extractJSONBlock(text: string): any | null {
+  // Standard code block (most common from LLM)
+  let match = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/i);
+  if (match?.[1]) {
+    try {
+      return JSON.parse(match[1].trim());
+    } catch (e) {
+      // fall through to next strategy
+    }
+  }
+
+  // Fallback: any JSON-like object containing a "title" key (robust for remix output)
+  match = text.match(/(\{[\s\S]*?"title"[\s\S]*?"uniforms"[\s\S]*?\})/i);
+  if (match?.[1]) {
+    try {
+      return JSON.parse(match[1].trim());
+    } catch (e) {
+      // final attempt – clean common LLM artifacts
+    }
+  }
+
+  // Last resort – look for any balanced {} that might be JSON
+  const jsonLike = text.match(/(\{[\s\S]*\})/);
+  if (jsonLike?.[1]) {
+    try {
+      const candidate = jsonLike[1]
+        .replace(/,\s*}/g, '}') // trailing commas
+        .replace(/'/g, '"');     // single quotes
+      return JSON.parse(candidate);
+    } catch (e) {
+      console.warn('JSON extraction failed', e);
+    }
+  }
+
+  return null;
 }
 
-export function analyzeWGSL(code: string): {
+export function analyzeWGSL(wgsl: string): {
   isValid: boolean;
   errors: string[];
   warnings: string[];
 } {
   const errors: string[] = [];
   const warnings: string[] = [];
-  const trimmed = code.trim();
 
-  if (!trimmed) {
-    errors.push('Shader code is empty');
-    return { isValid: false, errors, warnings };
-  }
+  const openBraces = (wgsl.match(/\{/g) || []).length;
+  const closeBraces = (wgsl.match(/\}/g) || []).length;
 
-  // Check entry points (full-screen triangle pattern)
-  if (!/@vertex/.test(trimmed) || !/fn vs\s*\(/.test(trimmed)) {
-    errors.push('Missing @vertex entry point "vs" (full-screen triangle expected)');
-  }
-  if (!/@fragment/.test(trimmed) || !/fn fs\s*\(/.test(trimmed)) {
-    errors.push('Missing @fragment entry point "fs"');
+  if (openBraces !== closeBraces) {
+    errors.push(`Unbalanced braces: ${openBraces} opening vs ${closeBraces} closing`);
   }
 
-  // Uniform struct + binding
-  if (!/struct Uniforms/.test(trimmed)) {
-    errors.push('Missing "struct Uniforms" definition');
+  if (!wgsl.includes('@vertex') || !wgsl.includes('fn vs(')) {
+    errors.push('Missing vertex entry point (@vertex fn vs())');
   }
-  if (!/@group\(0\)\s*@binding\(0\)\s*var<uniform>\s*u:\s*Uniforms;/.test(trimmed)) {
-    errors.push('Missing uniform binding: "@group(0) @binding(0) var<uniform> u: Uniforms;"');
+  if (!wgsl.includes('@fragment') || !wgsl.includes('fn fs(')) {
+    errors.push('Missing fragment entry point (@fragment fn fs())');
+  }
+  if (!wgsl.includes('struct Uniforms')) {
+    errors.push('Missing Uniforms struct definition');
+  }
+  if (!wgsl.includes('@group(0) @binding(0) var<uniform> u: Uniforms')) {
+    errors.push('Missing uniform binding (@group(0) @binding(0) var<uniform> u: Uniforms)');
+  }
+  if (wgsl.includes('fn main(')) {
+    errors.push('Uses main() instead of vs() and fs() entry points');
   }
 
-  // Animation time field is strongly encouraged
-  if (!/time\s*:\s*f32/.test(trimmed)) {
+  // Warning for missing time (common animation driver)
+  if (wgsl.includes('struct Uniforms') && !wgsl.includes('time: f32')) {
     warnings.push('Uniforms struct should contain a "time: f32" field for animation');
   }
 
-  // Legacy main() is not compatible with the render pipeline we create
-  if (/fn main\s*\(/.test(trimmed)) {
-    errors.push('Use vs() and fs() entry points instead of main() for WebGPU render pipeline');
-  }
-
-  // Rough structural sanity check
-  const { open, close } = countBraces(trimmed);
-  if (open !== close) {
-    errors.push(`Unbalanced braces: ${open} opening vs ${close} closing`);
-  }
-
-  const isValid = errors.length === 0;
-
-  if (!isValid) {
-    console.error('WGSL analysis errors:', errors);
-  } else if (warnings.length > 0) {
-    console.warn('WGSL analysis warnings:', warnings);
-  }
-
-  return { isValid, errors, warnings };
+  return {
+    isValid: errors.length === 0,
+    errors,
+    warnings,
+  };
 }
 
 export function parseLLMOutput(raw: string): Scene {
   if (!raw || typeof raw !== 'string') {
-    console.error('parseLLMOutput received invalid input');
-    return {
-      wgsl: '// fallback shader (invalid LLM output)',
-      uniforms: [...DEFAULT_UNIFORMS],
-      jsLogic: '',
-      title: 'Fallback Scene',
-    };
+    throw new Error('parseLLMOutput requires a non-empty string');
   }
 
-  const wgslBlock = extractCodeBlock(raw, 'wgsl') ||
-                   extractCodeBlock(raw, 'WGSL') ||
-                   '// No WGSL shader found – please regenerate';
+  const wgslMatch = raw.match(/```wgsl\s*([\s\S]*?)\s*```/i);
+  const wgsl = wgslMatch?.[1]?.trim() || '// No WGSL shader found in LLM output';
 
-  let jsonBlock = extractCodeBlock(raw, 'json') || extractCodeBlock(raw, 'JSON') || '{}';
+  const json = extractJSONBlock(raw);
 
-  let jsonData: any = {};
-  try {
-    // Strip any leftover markdown or explanatory text that sometimes sneaks in
-    const jsonOnly = jsonBlock.replace(/^[^{\[]*/, '').replace(/[^}\]]*$/, '');
-    jsonData = JSON.parse(jsonOnly);
-  } catch (err) {
-    console.warn('Could not parse JSON metadata block, falling back to defaults', err);
-    jsonData = {};
-  }
-
-  const title = jsonData.title && typeof jsonData.title === 'string'
-    ? jsonData.title
-    : deriveTitleFromPrompt(raw);
-
+  let title = 'Untitled Scene';
   let uniforms: Uniform[] = [];
+  let jsLogic = '';
 
-  if (Array.isArray(jsonData.uniforms)) {
-    uniforms = jsonData.uniforms
-      .map((u: any): Uniform | null => {
-        if (!u || typeof u.name !== 'string') return null;
-        return {
-          name: u.name.toLowerCase(),
-          type: 'f32',
+  if (json) {
+    title = json.title && typeof json.title === 'string'
+      ? json.title
+      : deriveTitleFromPrompt(raw);
+
+    if (Array.isArray(json.uniforms)) {
+      uniforms = json.uniforms
+        .filter((u: any) => u && typeof u.name === 'string')
+        .map((u: any): Uniform => ({
+          name: u.name,
+          type: u.type === 'f32' || u.type === 'i32' ? u.type : 'f32',
           default: typeof u.default === 'number' ? u.default : 1.0,
           min: typeof u.min === 'number' ? u.min : 0.0,
           max: typeof u.max === 'number' ? u.max : 10.0,
-        };
-      })
-      .filter((u: Uniform | null): u is Uniform => u !== null);
+        }));
+    }
+
+    if (typeof json.jsLogic === 'string') {
+      jsLogic = json.jsLogic;
+    }
+  } else {
+    title = deriveTitleFromPrompt(raw);
   }
 
-  if (uniforms.length === 0) {
-    uniforms = [...DEFAULT_UNIFORMS];
-  }
-
-  // Run static analysis and surface clear errors before the GPU ever sees the code
-  const analysis = analyzeWGSL(wgslBlock);
+  // Always run static analysis and surface issues
+  const analysis = analyzeWGSL(wgsl);
   if (!analysis.isValid) {
-    console.error(`Static analysis failed for generated shader titled "${title}"`);
+    console.error('WGSL analysis errors:', analysis.errors);
+  }
+  if (analysis.warnings.length > 0) {
+    console.warn('WGSL analysis warnings:', analysis.warnings);
   }
 
   return {
-    wgsl: wgslBlock,
-    uniforms,
-    jsLogic: typeof jsonData.jsLogic === 'string' ? jsonData.jsLogic : '// AI-generated scene logic',
     title,
+    wgsl,
+    uniforms,
+    jsLogic,
+  };
+}
+
+/**
+ * Parses an exported Lumagen HTML file.
+ * Prefers the embedded <script id="lumagen-meta" type="application/json"> block.
+ * Falls back to legacy HTML comment for older exports.
+ * Returns a Scene ready for loading, remixing or pipeline creation.
+ */
+export function parseExportedHTML(html: string): Scene {
+  if (!html || typeof html !== 'string') {
+    throw new Error('parseExportedHTML requires a non-empty HTML string');
+  }
+
+  // Primary path – embedded metadata (current exporter)
+  const metaMatch = html.match(
+    /<script id="lumagen-meta" type="application\/json">([\s\S]*?)<\/script>/i
+  );
+  if (metaMatch?.[1]) {
+    try {
+      const meta = JSON.parse(metaMatch[1].trim());
+      return {
+        title: meta.title && typeof meta.title === 'string' ? meta.title : 'Community Scene',
+        wgsl: meta.wgsl && typeof meta.wgsl === 'string' ? meta.wgsl : '// No shader found',
+        uniforms: Array.isArray(meta.uniforms) ? meta.uniforms : [],
+        jsLogic: typeof meta.jsLogic === 'string' ? meta.jsLogic : '',
+      };
+    } catch (err) {
+      console.warn('Failed to parse embedded lumagen-meta JSON', err);
+    }
+  }
+
+  // Legacy fallback – HTML comment used in early exports
+  const legacyMatch = html.match(/<!--\s*LUMAGEN:\s*(\{[\s\S]*?\})\s*-->/i);
+  if (legacyMatch?.[1]) {
+    try {
+      const meta = JSON.parse(legacyMatch[1]);
+      return {
+        title: meta.title && typeof meta.title === 'string' ? meta.title : 'Community Scene',
+        wgsl: meta.wgsl && typeof meta.wgsl === 'string' ? meta.wgsl : '// No shader found',
+        uniforms: Array.isArray(meta.uniforms) ? meta.uniforms : [],
+        jsLogic: typeof meta.jsLogic === 'string' ? meta.jsLogic : '',
+      };
+    } catch (err) {
+      console.warn('Failed to parse legacy LUMAGEN comment', err);
+    }
+  }
+
+  // Minimal fallback when no metadata is present
+  const titleMatch = html.match(/<title>([^<]+?)(?: — made with Lumagen)?<\/title>/i);
+  const title = titleMatch ? titleMatch[1].trim() : 'Imported Scene';
+
+  return {
+    title,
+    wgsl: '// Shader could not be extracted from HTML',
+    uniforms: [],
+    jsLogic: '// No JS logic embedded',
   };
 }
