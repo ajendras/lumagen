@@ -6,6 +6,7 @@
  * with 16-byte alignment). Live updates are reflected instantly.
  * Includes helper for WebAudio FFT data (audioBass, audioMid, audioTreble, audioLevel).
  * Now runs static analysis (analyzeWGSL) before any compilation attempt.
+ * Extended with compute shader + storage buffer support for multi-pass effects.
  */
 
 import { getActiveContext } from './context.js';
@@ -13,11 +14,16 @@ import { analyzeWGSL } from '../scene/parser.js';
 import type { Uniform } from '../main.js';
 
 let currentPipeline: GPURenderPipeline | null = null;
+let currentComputePipeline: GPUComputePipeline | null = null;
 let currentUniformBuffer: GPUBuffer | null = null;
+let currentStorageBuffer: GPUBuffer | null = null;
 let currentBindGroup: GPUBindGroup | null = null;
 let uniformOffsets = new Map<string, number>();
 let uniformValues = new Map<string, number>();
 let activeUniforms: Uniform[] = [];
+let hasActiveCompute = false;
+
+const STORAGE_BUFFER_SIZE = 4096; // 256 * 16 bytes (vec4f)
 
 export async function createPipeline(
   wgsl: string,
@@ -31,6 +37,7 @@ export async function createPipeline(
   }
 
   const { device, format } = ctx;
+  const hasCompute = /@compute/.test(wgsl) || wgsl.includes('fn cs(');
 
   // Static analysis catches common WGSL errors early with helpful messages
   // before we ever attempt to create a shader module or call getCompilationInfo().
@@ -59,15 +66,25 @@ export async function createPipeline(
     throw new Error(`WGSL compilation error:\n${errors}`);
   }
 
+  const bindGroupLayoutEntries: GPUBindGroupLayoutEntry[] = [
+    {
+      binding: 0,
+      visibility: GPUShaderStage.FRAGMENT | (hasCompute ? GPUShaderStage.COMPUTE : 0),
+      buffer: { type: 'uniform' },
+    },
+  ];
+
+  if (hasCompute) {
+    bindGroupLayoutEntries.push({
+      binding: 1,
+      visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
+      buffer: { type: 'storage' },
+    });
+  }
+
   const bindGroupLayout = device.createBindGroupLayout({
-    label: 'Lumagen uniforms layout',
-    entries: [
-      {
-        binding: 0,
-        visibility: GPUShaderStage.FRAGMENT,
-        buffer: { type: 'uniform' },
-      },
-    ],
+    label: 'Lumagen uniforms + storage layout',
+    entries: bindGroupLayoutEntries,
   });
 
   const pipelineLayout = device.createPipelineLayout({
@@ -93,6 +110,33 @@ export async function createPipeline(
     },
   });
 
+  if (hasCompute) {
+    currentComputePipeline = device.createComputePipeline({
+      label: 'Lumagen compute pipeline',
+      layout: pipelineLayout,
+      compute: {
+        module: shaderModule,
+        entryPoint: 'cs',
+      },
+    });
+
+    currentStorageBuffer = device.createBuffer({
+      label: 'Lumagen storage buffer (compute)',
+      size: STORAGE_BUFFER_SIZE,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+
+    // Zero-initialize
+    device.queue.writeBuffer(
+      currentStorageBuffer,
+      0,
+      new Float32Array(STORAGE_BUFFER_SIZE / 4)
+    );
+  } else {
+    currentComputePipeline = null;
+    currentStorageBuffer = null;
+  }
+
   // Uniform buffer sized for time + up to 12 additional f32 values (16-byte aligned)
   const bufferSize = 256;
   currentUniformBuffer = device.createBuffer({
@@ -101,15 +145,24 @@ export async function createPipeline(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
+  const bindGroupEntries: GPUBindGroupEntry[] = [
+    {
+      binding: 0,
+      resource: { buffer: currentUniformBuffer! },
+    },
+  ];
+
+  if (hasCompute && currentStorageBuffer) {
+    bindGroupEntries.push({
+      binding: 1,
+      resource: { buffer: currentStorageBuffer },
+    });
+  }
+
   currentBindGroup = device.createBindGroup({
-    label: 'Lumagen uniform bind group',
+    label: 'Lumagen uniform + storage bind group',
     layout: bindGroupLayout,
-    entries: [
-      {
-        binding: 0,
-        resource: { buffer: currentUniformBuffer! },
-      },
-    ],
+    entries: bindGroupEntries,
   });
 
   // Build offset map (time at byte 0, each subsequent uniform at 16-byte boundary).
@@ -130,11 +183,13 @@ export async function createPipeline(
   });
 
   activeUniforms = [...nonTimeUniforms];
+  hasActiveCompute = hasCompute;
 
   console.log(
-    '%c🔧 Pipeline created with %d uniforms',
+    '%c🔧 Pipeline created with %d uniforms%s',
     'color:#67e8f9',
-    nonTimeUniforms.length
+    nonTimeUniforms.length,
+    hasCompute ? ' + compute pass (storage buffer @binding(1))' : ''
   );
 
   return currentPipeline;
@@ -181,6 +236,20 @@ export function writeUniforms(time: number): void {
   });
 
   ctx.device.queue.writeBuffer(currentUniformBuffer, 0, bufferData);
+}
+
+export function dispatchCompute(encoder: GPUCommandEncoder): void {
+  if (!hasActiveCompute || !currentComputePipeline || !currentBindGroup || !currentStorageBuffer) {
+    return;
+  }
+
+  const computePass = encoder.beginComputePass({
+    label: 'Lumagen compute pass',
+  });
+  computePass.setPipeline(currentComputePipeline);
+  computePass.setBindGroup(0, currentBindGroup);
+  computePass.dispatchWorkgroups(256, 1, 1);
+  computePass.end();
 }
 
 export function getCurrentPipeline(): GPURenderPipeline | null {

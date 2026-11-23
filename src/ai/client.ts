@@ -20,7 +20,8 @@ Rules:
 - Use organic motion, soft gradients, and gentle noise. Keep code under 110 lines.
 - If the prompt mentions music, beat, reactive, audio, visualizer, microphone or sound, include uniforms audioLevel, audioBass, audioMid, audioTreble (all f32, default 0.0, min 0.0, max 2.0). Use them in the shader to pulse colors, scale features, add distortion or drive intensity.
 - You can also handle remix requests when the user provides an existing shader and a specific edit instruction. In that case, modify ONLY the mentioned aspects (lighting, motion, colors, density, etc.) while preserving overall structure, entry points, uniform bindings and the rest of the code.
-- In the JSON block always include a short evocative "title" based on the prompt (e.g. "AI Dreamscape", "Kelp Forest").
+- For complex effects (particles, fluid sim, reaction-diffusion) you may output a WGSL block containing BOTH a compute shader AND render shaders. The compute entry point must be named 'cs' with exactly '@compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) id: u32)'. Declare a storage buffer at '@group(0) @binding(1) var<storage, read_write> particles: array<vec4f, 256>;'. The runtime automatically creates a 4096-byte storage buffer and calls dispatchWorkgroups(256) before every render pass. The fragment shader may read the same buffer (declare as var<storage> particles: array<vec4f, 256>;). This enables true multi-pass rendering.
+- In the JSON block always include a short evocative "title" based on the prompt (e.g. "AI Dreamscape", "Kelp Forest") and "hasCompute": true when a compute shader is present.
 - After the shader, output a JSON block with "title", "uniforms" (array of {name, type:"f32", default, min, max}) and optional "jsLogic".
 - Only respond with the two code blocks. No explanations.
 
@@ -31,6 +32,7 @@ struct Uniforms {
   audioLevel: f32, audioBass: f32, audioMid: f32, audioTreble: f32 
 }
 @group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var<storage, read_write> particles: array<vec4f, 256>;
 // ... full shader with vs() and fs() using audio uniforms for reactivity
 \`\`\`
 
@@ -46,7 +48,8 @@ struct Uniforms {
     {"name":"audioMid","type":"f32","default":0.0,"min":0.0,"max":2.0},
     {"name":"audioTreble","type":"f32","default":0.0,"min":0.0,"max":2.0}
   ],
-  "jsLogic": ""
+  "jsLogic": "",
+  "hasCompute": false
 }
 \`\`\``;
 
@@ -163,6 +166,7 @@ fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       ],
       jsLogic: '// Fallback – audio reactivity is driven by WebAudio FFT',
       title: description.includes('kelp') ? 'Kelp Forest' : 'Audio Reactive Nebula',
+      hasCompute: false,
     };
   }
 }
@@ -179,9 +183,10 @@ export async function remixPart(currentScene: Scene, instruction: string): Promi
 Rules for remix:
 - You are given the FULL current WGSL shader.
 - Apply ONLY the specific change described in the targeted edit instruction.
-- Preserve ALL other code, struct fields, entry points (vs/fs), uniform bindings, and overall style.
+- Preserve ALL other code, struct fields, entry points (vs/fs/cs), uniform bindings, and overall style.
 - Keep the shader concise (<120 lines) and maintain the pastel/organic aesthetic.
-- In the JSON block always include a short evocative "title".
+- If the original used a compute shader, preserve the compute pass and storage buffer unless the edit specifically asks to remove it.
+- In the JSON block always include a short evocative "title" and "hasCompute" (boolean).
 - After the wgsl block, ALWAYS output a complete JSON block containing the full updated uniforms array and title.
 - Output ONLY the two code blocks. No explanations or extra text.`;
 
@@ -210,6 +215,9 @@ Return the remixed shader (only the requested part changed) followed by the comp
     }
     if (updated.uniforms.length === 0) {
       updated.uniforms = [...currentScene.uniforms];
+    }
+    if (typeof updated.hasCompute === 'undefined') {
+      updated.hasCompute = currentScene.hasCompute ?? false;
     }
 
     console.log(

@@ -82,7 +82,10 @@ Microphone or audio track FFT data drives bass/mid/treble/level uniforms for bea
 🗃️ <b>Community Gallery</b><br>
 Upload exported HTMLs to a persistent local community gallery (localStorage). Load, inspect and remix community scenes instantly.
 </td>
-<td></td>
+<td width="33%" valign="top">
+⚙️ <b>Compute &amp; Multi-Pass</b><br>
+Compute shaders run before each render pass (storage buffers connect them). Enables particle systems, reaction-diffusion, and other complex procedural effects.
+</td>
 <td></td>
 </tr>
 </table>
@@ -166,6 +169,24 @@ await enableAudioReact();
 ```
 
 The analyzer computes real-time FFT and populates `audioLevel`, `audioBass`, `audioMid`, and `audioTreble` uniforms (0.0-2.0 range). Include them in your shader struct and use them to drive color, scale, distortion, or particle density for reactive visuals.
+
+### Compute shaders & multi-pass rendering
+
+```ts
+import { generateScene } from './src/ai/client.ts';
+import { createPipeline } from './src/gpu/pipeline.ts';
+
+const scene = await generateScene(
+  '256-particle fountain simulation with compute shader updating positions and velocities, rendered as glowing pastel orbs'
+);
+const pipeline = await createPipeline(scene.wgsl, scene.uniforms);
+// The render loop now automatically runs a compute pass (dispatchWorkgroups(256)) 
+// before each render pass using a shared storage buffer (binding 1). 
+// Use @compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) id: u32)
+// and declare @group(0) @binding(1) var<storage, read_write> particles: array<vec4f, 256>;
+```
+
+The AI is instructed to output a single WGSL block containing both compute (`cs`) and render (`vs`/`fs`) entry points when the prompt asks for complex simulation. The storage buffer connects the passes. The exported HTML includes the same multi-pass runtime.
 
 ### Load a gallery template
 
@@ -291,7 +312,7 @@ flowchart TD
     Prompt[Prompt textarea] --> bindPromptHandler
     bindPromptHandler --> generateScene[ai/client.ts → queryOllama]
     generateScene --> parseLLMOutput[scene/parser.ts (with analyzeWGSL)]
-    parseLLMOutput --> Scene[Scene {wgsl, uniforms, jsLogic, title}]
+    parseLLMOutput --> Scene[Scene {wgsl, uniforms, jsLogic, title, hasCompute?}]
     Scene --> createPipeline[gpu/pipeline.ts]
     Scene --> populateUniforms[ui/panel.ts]
     createPipeline --> RenderLoop[main.ts render loop]
@@ -347,7 +368,7 @@ Runs the Vitest suite in `tests/parser.test.ts`. Covers `parseLLMOutput()` edge 
 - [x] Implement 'remix this part' button that sends current shader back to LLM with a targeted edit prompt
 - [x] Add static analysis step that catches common WGSL errors before attempting to compile
 - [x] Build public community gallery site where exported HTMLs can be uploaded and remixed
-- [ ] Support compute shaders and multi-pass rendering for more complex effects
+- [x] Support compute shaders and multi-pass rendering for more complex effects
 - [ ] Add few-shot examples to the system prompt to improve shader quality on first try
 - [ ] Create undo/redo stack for prompt iterations and parameter adjustments
 - [ ] Optimize exporter with Brotli compression reporting and size budget warnings
