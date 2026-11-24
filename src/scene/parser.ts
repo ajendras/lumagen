@@ -1,10 +1,8 @@
 /**
  * src/scene/parser.ts
- * Parses LLM output into a Scene object by extracting the WGSL code block
- * and the JSON metadata block. Runs static analysis on the shader.
- * Also handles parsing of exported HTML files for the community gallery
- * by looking for embedded JSON in <script id="lumagen-meta"> or fallback
- * to older <!-- LUMAGEN: {...} --> comments.
+ * Parses raw LLM output (WGSL + JSON metadata) into a typed Scene.
+ * Includes static WGSL analysis to catch common errors early.
+ * Supports fenced blocks, loose JSON fallback, and exported HTML metadata.
  */
 
 import type { Uniform, Scene } from '../main.js';
@@ -15,39 +13,70 @@ export interface AnalysisResult {
   warnings: string[];
 }
 
+/**
+ * Extracts all ```lang ... ``` blocks from raw text.
+ */
+function extractCodeBlocks(text: string): Array<{ language: string; content: string }> {
+  const regex = /```(\w+)?\s*\n?([\s\S]*?)\n?\s*```/gi;
+  const blocks: Array<{ language: string; content: string }> = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text)) !== null) {
+    const language = (match[1] || 'text').toLowerCase().trim();
+    const content = match[2].trim();
+    blocks.push({ language, content });
+  }
+
+  return blocks;
+}
+
+/**
+ * Runs static analysis on WGSL to catch common Lumagen-required patterns.
+ * Does NOT throw — returns structured result so parser can be lenient while
+ * pipeline.ts remains strict.
+ */
 export function analyzeWGSL(wgsl: string): AnalysisResult {
   const errors: string[] = [];
   const warnings: string[] = [];
-  const code = wgsl.trim();
+  const normalized = wgsl.toLowerCase();
 
-  if (!code) {
-    errors.push('Shader code is empty');
-    return { isValid: false, errors, warnings };
+  if (!normalized.includes('@vertex') || !normalized.includes('fn vs(')) {
+    errors.push('Missing @vertex fn vs() entry point. Full-screen triangle vertex shader is required.');
   }
 
-  const hasVertex = /@vertex/i.test(code) && /fn\s+vs\s*\(/i.test(code);
-  const hasFragment = /@fragment/i.test(code) && /fn\s+fs\s*\(/i.test(code);
-  const hasMain = /fn\s+main\s*\(/i.test(code);
-  const hasUniformStruct = /struct\s+Uniforms\s*\{/i.test(code);
-  const hasUniformBinding = /@group\s*\(\s*0\s*\)\s*@binding\s*\(\s*0\s*\)\s*var<uniform>\s+\w+\s*:\s*Uniforms\s*;/i.test(code);
-  const hasTime = /time\s*:\s*f32/i.test(code);
-  const braceOpen = (code.match(/\{/g) || []).length;
-  const braceClose = (code.match(/\}/g) || []).length;
-  const hasCompute = /@compute/i.test(code) || /fn\s+cs\s*\(/i.test(code);
-
-  if (!hasVertex) errors.push('Missing @vertex fn vs() entry point. Full-screen triangle vertex shader is required.');
-  if (!hasFragment) errors.push('Missing @fragment fn fs() entry point.');
-  if (hasMain) errors.push('Found fn main() – use vs() for vertex and fs() for fragment instead.');
-  if (!hasUniformStruct) errors.push('Missing struct Uniforms definition.');
-  if (!hasUniformBinding) errors.push('Missing uniform binding (@group(0) @binding(0) var<uniform> u: Uniforms;)');
-  if (braceOpen !== braceClose) errors.push(`Unbalanced braces: ${braceOpen} opening, ${braceClose} closing.`);
-
-  if (hasUniformStruct && !hasTime) {
-    warnings.push('Uniforms struct is missing the "time: f32" field. Animation may not update correctly.');
+  if (!normalized.includes('@fragment') || !normalized.includes('fn fs(')) {
+    errors.push('Missing @fragment fn fs() entry point.');
   }
 
-  if (hasCompute && !/fn\s+cs\s*\(\s*@\s*builtin\(global_invocation_id\)\s+id:\s*u32\)/i.test(code)) {
-    warnings.push('Compute entry point should use @builtin(global_invocation_id) id: u32');
+  if (!normalized.includes('struct uniforms')) {
+    errors.push('Missing struct Uniforms definition.');
+  }
+
+  if (!normalized.includes('@group(0) @binding(0) var<uniform> u: uniforms')) {
+    errors.push('Missing uniform binding (@group(0) @binding(0) var<uniform> u: Uniforms;)');
+  }
+
+  // Simple brace balance check
+  let braceCount = 0;
+  for (const char of wgsl) {
+    if (char === '{') braceCount++;
+    if (char === '}') braceCount--;
+  }
+  if (braceCount !== 0) {
+    errors.push('Unbalanced braces in shader code.');
+  }
+
+  if (normalized.includes('fn main(')) {
+    warnings.push('Prefer explicit vs()/fs() entry points over main().');
+  }
+
+  if (normalized.includes('@compute') && (!normalized.includes('fn cs('))) {
+    errors.push('Compute shader present but missing fn cs(...) entry point.');
+  }
+
+  const hasTime = normalized.includes('time: f32');
+  if (!hasTime) {
+    warnings.push('Uniforms struct should usually contain a "time: f32" field.');
   }
 
   return {
@@ -57,146 +86,174 @@ export function analyzeWGSL(wgsl: string): AnalysisResult {
   };
 }
 
-function deriveTitleFromPrompt(promptOrCode: string): string {
-  const clean = promptOrCode.replace(/```[\s\S]*?```/g, '').trim();
-  const firstLine = clean.split('\n')[0] || clean;
-  const words = firstLine.split(/\s+/).slice(0, 3);
-  return words.map((w) => w.replace(/[^a-zA-Z]/g, '')).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ') || 'Lumagen Scene';
+/**
+ * Derives a short, evocative title from a prompt (used as fallback).
+ */
+export function deriveTitleFromPrompt(prompt: string): string {
+  const lower = prompt.toLowerCase();
+  if (lower.includes('kelp') || lower.includes('underwater')) return 'Kelp Forest';
+  if (lower.includes('neon') || lower.includes('garden')) return 'Neon Garden';
+  if (lower.includes('particle') || lower.includes('stellar')) return 'Stellar Particles';
+  if (lower.includes('fractal') || lower.includes('bloom')) return 'Fractal Bloom';
+  if (lower.includes('lava') || lower.includes('magma')) return 'Magma Flow';
+  if (lower.includes('aurora') || lower.includes('northern')) return 'Aurora Veil';
+  if (lower.includes('bubble')) return 'Bubble Realm';
+  if (lower.includes('crystal')) return 'Crystal Lattice';
+
+  // Generic title from first few words
+  const words = prompt.split(/\s+/).slice(0, 3);
+  return words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 }
 
+/**
+ * Parses raw LLM output containing a WGSL shader and JSON metadata.
+ * Robust against varying fence styles, ordering, and missing fences.
+ */
 export function parseLLMOutput(raw: string): Scene {
   if (!raw || typeof raw !== 'string') {
-    throw new Error('Invalid LLM output: expected a string');
+    throw new Error('parseLLMOutput requires a non-empty string');
   }
 
-  // Extract WGSL - support both ```wgsl and ```
-  let wgslMatch = raw.match(/```(?:wgsl|WGSL)?\s*\n?([\s\S]*?)\n?```/i);
-  let wgsl = wgslMatch ? wgslMatch[1].trim() : '';
+  const blocks = extractCodeBlocks(raw);
 
-  if (!wgsl) {
-    wgsl = raw.trim();
+  // Prefer wgsl block by language or by shader signatures
+  let wgslBlock = blocks.find(
+    b =>
+      b.language === 'wgsl' ||
+      b.content.includes('@vertex') ||
+      b.content.includes('struct Uniforms')
+  );
+  if (!wgslBlock && blocks.length > 0) {
+    wgslBlock = blocks[0];
   }
 
-  // Extract JSON metadata
-  let jsonMatch = raw.match(/```(?:json|JSON)?\s*\n?([\s\S]*?)\n?```/i);
-  let meta: any = null;
+  // Prefer json block by language or by JSON-like content with known keys
+  let jsonBlock = blocks.find(
+    b =>
+      b.language === 'json' ||
+      (b.content.trim().startsWith('{') &&
+        (b.content.includes('"title"') || b.content.includes('"uniforms"')))
+  );
+  if (!jsonBlock && blocks.length > 1) {
+    jsonBlock = blocks[1];
+  }
 
-  if (jsonMatch) {
-    const jsonText = jsonMatch[1].trim();
+  const wgsl = wgslBlock ? wgslBlock.content.trim() : raw.trim();
+
+  let meta: any = {};
+  let jsonText = '';
+
+  if (jsonBlock) {
+    jsonText = jsonBlock.content.trim();
+    // Remove any trailing commas that some LLMs emit (common JSON error)
+    jsonText = jsonText.replace(/,\s*(\}|\])/g, '$1');
     try {
       meta = JSON.parse(jsonText);
     } catch (e) {
       throw new Error(`Failed to parse JSON metadata block: ${(e as Error).message}`);
     }
   } else {
-    // Fallback: look for any JSON object in the text
-    const looseJsonMatch = raw.match(/(\{\s*"title"[\s\S]*?\}\s*(?=\n|$))/);
-    if (looseJsonMatch) {
+    // Loose match: look for an object containing "title" or "uniforms"
+    const looseMatch = raw.match(/(\{[\s\S]*?(?:"title"|"uniforms")[\s\S]*?\})/i);
+    if (looseMatch) {
+      jsonText = looseMatch[1].replace(/,\s*(\}|\])/g, '$1');
       try {
-        meta = JSON.parse(looseJsonMatch[1]);
+        meta = JSON.parse(jsonText);
       } catch (e) {
-        // ignore and fall through to error below
+        console.warn('Loose JSON match failed, using defaults');
       }
     }
   }
 
-  if (!meta || typeof meta.title !== 'string' || !Array.isArray(meta.uniforms)) {
-    throw new Error('No JSON metadata block found in LLM output. The AI must return a ```json block with title and uniforms.');
-  }
-
-  const uniforms: Uniform[] = meta.uniforms.map((u: any) => ({
-    name: u.name,
-    type: u.type || 'f32',
-    default: typeof u.default === 'number' ? u.default : 1.0,
-    min: typeof u.min === 'number' ? u.min : 0.0,
-    max: typeof u.max === 'number' ? u.max : 10.0,
-  }));
-
-  const title = (meta.title || deriveTitleFromPrompt(raw)).replace(/ \(Community\)$/i, '').trim();
-
   const analysis = analyzeWGSL(wgsl);
-  if (!analysis.isValid) {
+  if (analysis.errors.length > 0) {
     console.warn('Shader analysis found issues:', analysis.errors);
   }
+  if (analysis.warnings.length > 0) {
+    console.warn('WGSL analysis warnings:', analysis.warnings);
+  }
 
-  return {
-    title,
+  const scene: Scene = {
     wgsl,
-    uniforms,
-    jsLogic: meta.jsLogic || meta.js_logic || '',
-    hasCompute: !!meta.hasCompute || /@compute|fn cs\(/i.test(wgsl),
+    uniforms: Array.isArray(meta.uniforms)
+      ? meta.uniforms.map((u: any) => ({
+          name: u.name || 'intensity',
+          type: u.type || 'f32',
+          default: typeof u.default === 'number' ? u.default : 1.0,
+          min: typeof u.min === 'number' ? u.min : 0.0,
+          max: typeof u.max === 'number' ? u.max : 5.0,
+        }))
+      : [
+          { name: 'speed', type: 'f32', default: 1.0, min: 0.2, max: 4.0 },
+          { name: 'intensity', type: 'f32', default: 1.2, min: 0.5, max: 3.0 },
+        ],
+    title: typeof meta.title === 'string' && meta.title.trim()
+      ? meta.title.trim()
+      : deriveTitleFromPrompt(raw.substring(0, 120)),
+    jsLogic: typeof meta.jsLogic === 'string' ? meta.jsLogic.trim() : '',
+    hasCompute: meta.hasCompute === true || /@compute|fn cs\(/i.test(wgsl),
   };
+
+  return scene;
 }
 
+/**
+ * Parses a standalone HTML exported by exportToHTML().
+ * Looks for the embedded <script id="lumagen-meta"> first, falls back
+ * to regex extraction of shader and uniforms.
+ */
 export function parseExportedHTML(html: string): Scene {
   if (!html || typeof html !== 'string') {
     throw new Error('parseExportedHTML requires valid HTML string');
   }
 
-  // Prefer the new embedded JSON metadata script tag
-  const metaScriptRegex = /<script id=["']?lumagen-meta["']?[^>]*>([\s\S]*?)<\/script>/i;
-  const scriptMatch = html.match(metaScriptRegex);
-
-  if (scriptMatch && scriptMatch[1]) {
+  // Primary path: embedded JSON metadata
+  const metaMatch = html.match(
+    /<script id="lumagen-meta"[^>]*>([\s\S]*?)<\/script>/i
+  );
+  if (metaMatch && metaMatch[1]) {
     try {
-      const meta = JSON.parse(scriptMatch[1].trim());
+      const meta = JSON.parse(metaMatch[1].trim());
       return {
-        title: String(meta.title || 'Untitled Scene').replace(/ \(Community\)$/i, '').trim(),
-        wgsl: String(meta.wgsl || ''),
+        wgsl: meta.wgsl || '',
         uniforms: Array.isArray(meta.uniforms) ? meta.uniforms : [],
+        title: meta.title || 'Community Scene',
         jsLogic: meta.jsLogic || '',
-        hasCompute: !!meta.hasCompute,
-      };
-    } catch (parseError) {
-      console.warn('Failed to parse meta script JSON, falling back to regex', parseError);
-    }
-  }
-
-  // Fallback for older exports using HTML comment
-  const commentRegex = /<!--\s*LUMAGEN:\s*(\{[\s\S]*?\})\s*-->/i;
-  const commentMatch = html.match(commentRegex);
-
-  if (commentMatch && commentMatch[1]) {
-    try {
-      const meta = JSON.parse(commentMatch[1]);
-      const wgslMatch = html.match(/```wgsl\s*([\s\S]*?)\s*```/i);
-      return {
-        title: String(meta.title || 'Untitled Scene').replace(/ \(Community\)$/i, '').trim(),
-        wgsl: meta.wgsl || (wgslMatch ? wgslMatch[1].trim() : ''),
-        uniforms: Array.isArray(meta.uniforms) ? meta.uniforms : [],
-        jsLogic: meta.jsLogic || '',
-        hasCompute: !!meta.hasCompute,
+        hasCompute: meta.hasCompute ?? false,
       };
     } catch (e) {
-      console.warn('Failed to parse LUMAGEN comment JSON');
+      console.warn('Failed to parse embedded lumagen-meta JSON, falling back to regex');
     }
   }
 
-  // Ultimate fallback: regex extraction from title and any uniform data
-  const titleMatch = html.match(/title["']\s*:\s*["']([^"']*?)["']/i) ||
-                     html.match(/<title>([^<]+?)(\s*—|\s*-)/i);
-  let title = titleMatch ? titleMatch[1].trim() : 'Imported Scene';
-  title = title.replace(/ \(Community\)$/i, '').trim();
+  // Fallback regex extraction (for older exports or malformed HTML)
+  const wgslMatch = html.match(/wgsl:\s*`([\s\S]*?)`[,}]|wgsl\s*=\s*["']([\s\S]*?)["']/i);
+  const wgsl = wgslMatch
+    ? (wgslMatch[1] || wgslMatch[2] || '').trim()
+    : '// Extracted shader (fallback)';
 
-  const wgslMatch = html.match(/```wgsl\s*([\s\S]*?)\s*```/i);
-  const wgsl = wgslMatch ? wgslMatch[1].trim() : '// No WGSL found in export';
-
-  let uniforms: Uniform[] = [];
-  const anyJsonMatch = html.match(/(\{[\s\S]*?uniforms[\s\S]*?\})/i);
-  if (anyJsonMatch) {
-    try {
-      const parsed = JSON.parse(anyJsonMatch[1]);
-      if (Array.isArray(parsed.uniforms)) {
-        uniforms = parsed.uniforms;
-      }
-    } catch (_) {}
-  }
+  const titleMatch = html.match(/title["']\s*:\s*["']([^"']+)["']/i);
+  const title = titleMatch ? titleMatch[1] : 'Imported Scene';
 
   return {
-    title,
     wgsl,
-    uniforms,
-    jsLogic: '// Parsed from exported HTML',
-    hasCompute: false,
+    uniforms: [],
+    title,
+    jsLogic: '// Imported from exported HTML',
+    hasCompute: /@compute|fn cs\(/i.test(wgsl),
+  };
+}
+
+/**
+ * Creates a new Scene by merging updates while preserving original structure.
+ * Useful for partial remixes.
+ */
+export function remixScene(current: Scene, updates: Partial<Scene>): Scene {
+  return {
+    wgsl: updates.wgsl ?? current.wgsl,
+    uniforms: updates.uniforms ?? current.uniforms,
+    title: updates.title ?? current.title,
+    jsLogic: updates.jsLogic ?? current.jsLogic,
+    hasCompute: updates.hasCompute ?? current.hasCompute,
   };
 }

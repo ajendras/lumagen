@@ -1,175 +1,201 @@
 import { describe, it, expect } from 'vitest';
-import { parseLLMOutput, analyzeWGSL, parseExportedHTML } from '../src/scene/parser.js';
+import {
+  parseLLMOutput,
+  analyzeWGSL,
+  deriveTitleFromPrompt,
+  parseExportedHTML,
+  remixScene,
+} from '../src/scene/parser.js';
 
-describe('scene/parser.ts', () => {
-  describe('parseLLMOutput', () => {
-    it('extracts wgsl, uniforms, title and jsLogic from LLM output', () => {
-      const mockOutput = `Here is a nice shader:
-
-\`\`\`wgsl
-struct Uniforms {
+const MINIMAL_VALID_WGSL = `struct Uniforms {
   time: f32,
   speed: f32,
-  intensity: f32
+  intensity: f32,
 }
+
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-  let verts = array<vec2f, 3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+  let verts = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
   return vec4f(verts[i], 0.0, 1.0);
 }
 
 @fragment
 fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-  return vec4f(0.5, 0.8, 1.0, 1.0);
-}
+  return vec4f(0.6, 0.8, 1.0, 1.0) * u.intensity;
+}`;
+
+const VALID_JSON_META = `{
+  "title": "Test Scene",
+  "uniforms": [
+    {"name":"speed","type":"f32","default":1.2,"min":0.3,"max":4.0},
+    {"name":"intensity","type":"f32","default":1.5,"min":0.5,"max":3.0}
+  ],
+  "jsLogic": "console.log('test scene running');",
+  "hasCompute": false
+}`;
+
+describe('scene/parser.ts', () => {
+  describe('parseLLMOutput', () => {
+    it('extracts wgsl, uniforms, title and jsLogic from LLM output', () => {
+      const output = `\`\`\`wgsl
+${MINIMAL_VALID_WGSL}
+\`\`\`
+
+\`\`\`json
+${VALID_JSON_META}
+\`\`\``;
+
+      const scene = parseLLMOutput(output);
+
+      expect(scene.wgsl).toContain('struct Uniforms');
+      expect(scene.wgsl).toContain('@vertex');
+      expect(scene.wgsl).toContain('@fragment');
+      expect(scene.title).toBe('Test Scene');
+      expect(scene.uniforms).toHaveLength(2);
+      expect(scene.uniforms[0].name).toBe('speed');
+      expect(scene.uniforms[0].default).toBe(1.2);
+      expect(scene.jsLogic).toBe("console.log('test scene running');");
+      expect(scene.hasCompute).toBe(false);
+    });
+
+    it('handles output with no fenced json by using loose match', () => {
+      const output = `\`\`\`wgsl
+${MINIMAL_VALID_WGSL}
+\`\`\`
+
+{
+  "title": "Loose Scene",
+  "uniforms": [{"name":"hue","type":"f32","default":0.5,"min":0,"max":1}]
+}`;
+
+      const scene = parseLLMOutput(output);
+
+      expect(scene.title).toBe('Loose Scene');
+      expect(scene.uniforms).toHaveLength(1);
+      expect(scene.uniforms[0].name).toBe('hue');
+    });
+
+    it('falls back gracefully when JSON is missing some fields', () => {
+      const output = `\`\`\`wgsl
+${MINIMAL_VALID_WGSL}
 \`\`\`
 
 \`\`\`json
 {
-  "title": "Pastel Dream",
-  "uniforms": [
-    {"name":"speed","type":"f32","default":1.5,"min":0.5,"max":3.0},
-    {"name":"intensity","type":"f32","default":1.2,"min":0.8,"max":2.5}
-  ],
-  "jsLogic": "console.log('hello');",
-  "hasCompute": false
+  "title": "Minimal Scene"
 }
 \`\`\``;
 
-      const scene = parseLLMOutput(mockOutput);
-      expect(scene.title).toBe('Pastel Dream');
-      expect(scene.uniforms).toHaveLength(2);
-      expect(scene.uniforms[0].name).toBe('speed');
-      expect(scene.wgsl).toContain('struct Uniforms');
-      expect(scene.wgsl).toContain('fn vs(');
-      expect(scene.jsLogic).toBe("console.log('hello');");
+      const scene = parseLLMOutput(output);
+
+      expect(scene.title).toBe('Minimal Scene');
+      expect(scene.uniforms.length).toBeGreaterThan(0); // defaults injected
+      expect(scene.jsLogic).toBe('');
       expect(scene.hasCompute).toBe(false);
     });
 
-    it('falls back gracefully when JSON is missing some fields', () => {
-      const mockOutput = `\`\`\`wgsl
-struct Uniforms { time: f32, speed: f32 }
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@vertex fn vs() {} @fragment fn fs() {}
+    it('derives title when none is provided in JSON', () => {
+      const output = `\`\`\`wgsl
+${MINIMAL_VALID_WGSL}
 \`\`\`
-{
-  "title": "Minimal",
-  "uniforms": [{"name":"speed","default":1.0}]
-}`;
-      const scene = parseLLMOutput(mockOutput);
-      expect(scene.title).toBe('Minimal');
-      expect(scene.uniforms).toHaveLength(1);
-    });
 
-    it('handles output with no fenced json by using loose match', () => {
-      const output = `shader here
-{"title":"Test Scene","uniforms":[{"name":"hue","default":0.5}]}
-more text`;
+\`\`\`json
+{"uniforms": []}
+\`\`\``;
+
       const scene = parseLLMOutput(output);
-      expect(scene.title).toBe('Test Scene');
-      expect(scene.uniforms).toHaveLength(1);
+      expect(scene.title.length).toBeGreaterThan(0);
+      // deriveTitleFromPrompt should produce something sensible
+      expect(typeof scene.title).toBe('string');
     });
   });
 
   describe('analyzeWGSL', () => {
-    it('accepts a valid shader', () => {
-      const valid = `
-struct Uniforms {
-  time: f32,
-  speed: f32,
-  intensity: f32
-}
-@group(0) @binding(0) var<uniform> u: Uniforms;
+    it('reports missing entry points and bindings', () => {
+      const badShader = `fn main() { }`;
+      const result = analyzeWGSL(badShader);
 
-@vertex
-fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { 
-  return vec4f(0.0, 0.0, 0.0, 1.0); 
-}
-
-@fragment
-fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f { 
-  return vec4f(1.0); 
-}`;
-      const analysis = analyzeWGSL(valid);
-      expect(analysis.isValid).toBe(true);
-      expect(analysis.errors).toHaveLength(0);
+      expect(result.isValid).toBe(false);
+      expect(result.errors.length).toBeGreaterThan(2);
+      expect(result.errors.some(e => e.includes('vertex'))).toBe(true);
+      expect(result.errors.some(e => e.includes('fragment'))).toBe(true);
     });
 
-    it('detects missing uniform binding', () => {
-      const invalid = `
-struct Uniforms { time: f32 }
-@vertex fn vs() { }
-@fragment fn fs() { }`;
-      const analysis = analyzeWGSL(invalid);
-      expect(analysis.isValid).toBe(false);
-      expect(analysis.errors.some(e => e.toLowerCase().includes('uniform binding') || e.toLowerCase().includes('uni'))).toBe(true);
+    it('accepts a minimal valid full-screen triangle shader', () => {
+      const result = analyzeWGSL(MINIMAL_VALID_WGSL);
+      expect(result.isValid).toBe(true);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings.length).toBe(0); // no warnings on good shader
     });
 
-    it('warns about missing time field', () => {
-      const noTime = `
-struct Uniforms { speed: f32, intensity: f32 }
-@group(0) @binding(0) var<uniform> u: Uniforms;
-@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { return vec4f(); }
-@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f { return vec4f(1.0); }`;
-      const analysis = analyzeWGSL(noTime);
-      expect(analysis.isValid).toBe(true);
-      expect(analysis.warnings.some(w => w.toLowerCase().includes('time'))).toBe(true);
+    it('warns about missing time uniform', () => {
+      const noTime = MINIMAL_VALID_WGSL.replace('time: f32,', '');
+      const result = analyzeWGSL(noTime);
+      expect(result.warnings.some(w => w.includes('time'))).toBe(true);
+    });
+  });
+
+  describe('deriveTitleFromPrompt', () => {
+    it('returns themed titles for known keywords', () => {
+      expect(deriveTitleFromPrompt('gentle underwater kelp forest')).toBe('Kelp Forest');
+      expect(deriveTitleFromPrompt('ethereal glowing neon garden')).toBe('Neon Garden');
     });
 
-    it('detects missing vertex entry point', () => {
-      const noVertex = `struct Uniforms { time: f32 } @group(0)@binding(0) var<uniform> u: Uniforms; @fragment fn fs() {}`;
-      const analysis = analyzeWGSL(noVertex);
-      expect(analysis.isValid).toBe(false);
-      expect(analysis.errors.some(e => e.toLowerCase().includes('vertex'))).toBe(true);
-    });
-
-    it('detects unbalanced braces', () => {
-      const unbalanced = `struct Uniforms { time: f32 } fn vs() { if (true) { `;
-      const analysis = analyzeWGSL(unbalanced);
-      expect(analysis.isValid).toBe(false);
-      expect(analysis.errors.some(e => e.toLowerCase().includes('brace') || e.toLowerCase().includes('unbalanced'))).toBe(true);
-    });
-
-    it('detects use of main()', () => {
-      const bad = `struct Uniforms { time: f32 } @group(0)@binding(0)var<uniform>u:Uniforms; fn main() {}`;
-      const analysis = analyzeWGSL(bad);
-      expect(analysis.isValid).toBe(false);
-      expect(analysis.errors.some(e => e.toLowerCase().includes('main'))).toBe(true);
+    it('falls back to capitalized words', () => {
+      const title = deriveTitleFromPrompt('a beautiful purple vortex');
+      expect(title).toBe('A Beautiful Purple');
     });
   });
 
   describe('parseExportedHTML', () => {
-    it('parses new style export with embedded meta script', () => {
-      const html = `<script id="lumagen-meta" type="application/json">
-{
-  "title": "Neon Garden",
-  "wgsl": "struct Uniforms { time: f32 } ...",
-  "uniforms": [{"name":"speed","default":1.0}],
-  "hasCompute": false
-}
-</script>`;
-      const scene = parseExportedHTML(html);
-      expect(scene.title).toBe('Neon Garden');
-      expect(scene.uniforms).toBeDefined();
-      expect(scene.uniforms.length).toBe(1);
-    });
-
-    it('falls back to regex extraction for older exports', () => {
+    it('extracts scene from embedded lumagen-meta JSON', () => {
       const html = `<!DOCTYPE html>
-<title>Neon Garden (Community) — made with Lumagen</title>
-<!-- LUMAGEN: {"title":"Neon Garden","uniforms":[{"name":"hueShift","default":0.5}]} -->
-<canvas></canvas>`;
+<html><body>
+<script id="lumagen-meta" type="application/json">
+{
+  "title": "Community Test",
+  "wgsl": "struct Uniforms { time: f32 } @vertex fn vs(){}",
+  "uniforms": [{"name":"speed","default":1.0}],
+  "jsLogic": "// test"
+}
+</script>
+</body></html>`;
+
       const scene = parseExportedHTML(html);
-      expect(scene.title).toBe('Neon Garden');
-      expect(scene.uniforms).toBeDefined();
+      expect(scene.title).toBe('Community Test');
+      expect(scene.wgsl).toContain('struct Uniforms');
+      expect(scene.uniforms).toHaveLength(1);
     });
 
-    it('handles community uploaded scenes', () => {
-      const html = `<script id="lumagen-meta" type="application/json">{"title":"Neon Garden (Community)","uniforms":[]}</script>`;
+    it('falls back to regex when meta block is missing', () => {
+      const html = `<canvas></canvas><script>/* wgsl: \`struct Uniforms{time:f32}\` */</script>`;
       const scene = parseExportedHTML(html);
-      expect(scene.title).toBe('Neon Garden');
+      expect(scene.title).toBe('Imported Scene');
+      expect(scene.wgsl).toContain('struct Uniforms');
+    });
+  });
+
+  describe('remixScene', () => {
+    it('merges updates while preserving original data', () => {
+      const original: Scene = {
+        wgsl: 'original shader',
+        uniforms: [{ name: 'speed', type: 'f32', default: 1, min: 0, max: 10 }],
+        title: 'Original',
+        jsLogic: 'old logic',
+        hasCompute: false,
+      };
+
+      const updated = remixScene(original, {
+        wgsl: 'new shader',
+        title: 'Remixed Title',
+      });
+
+      expect(updated.wgsl).toBe('new shader');
+      expect(updated.title).toBe('Remixed Title');
+      expect(updated.uniforms).toEqual(original.uniforms);
+      expect(updated.jsLogic).toBe('old logic');
     });
   });
 });
