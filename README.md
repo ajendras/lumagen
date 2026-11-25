@@ -38,7 +38,7 @@ Viral single-file WebGPU demos like Abyssal Garden inspire many, yet creating th
 <tr>
 <td width="33%" valign="top">
 🌐 <b>AI Scene Gen</b><br>
-Converts plain-English prompts into complete WGSL shaders, JS logic and uniform metadata via Ollama
+Converts plain-English prompts into complete WGSL shaders, JS logic and uniform metadata via Ollama. Few-shot examples in the system prompt improve first-try quality.
 </td>
 <td width="33%" valign="top">
 ⚡ <b>Live Preview</b><br>
@@ -369,7 +369,7 @@ Runs the Vitest suite in `tests/parser.test.ts`. Covers `parseLLMOutput()` edge 
 - [x] Add static analysis step that catches common WGSL errors before attempting to compile
 - [x] Build public community gallery site where exported HTMLs can be uploaded and remixed
 - [x] Support compute shaders and multi-pass rendering for more complex effects
-- [ ] Add few-shot examples to the system prompt to improve shader quality on first try
+- [x] Add few-shot examples to the system prompt to improve shader quality on first try
 - [ ] Create undo/redo stack for prompt iterations and parameter adjustments
 - [ ] Optimize exporter with Brotli compression reporting and size budget warnings
 - [ ] Add mobile touch-friendly canvas gestures for rotating or zooming procedural cameras

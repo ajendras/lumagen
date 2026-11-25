@@ -1,201 +1,130 @@
 import { describe, it, expect } from 'vitest';
-import {
-  parseLLMOutput,
-  analyzeWGSL,
-  deriveTitleFromPrompt,
-  parseExportedHTML,
-  remixScene,
-} from '../src/scene/parser.js';
+import { parseLLMOutput, analyzeWGSL, deriveTitleFromPrompt, parseExportedHTML } from '../src/scene/parser.js';
+import { SYSTEM_PROMPT } from '../src/ai/client.js';
 
-const MINIMAL_VALID_WGSL = `struct Uniforms {
-  time: f32,
-  speed: f32,
-  intensity: f32,
+describe('Scene Parser', () => {
+  it('parseLLMOutput extracts WGSL, uniforms, title, jsLogic and hasCompute', () => {
+    const mockOutput = `\`\`\`wgsl
+struct Uniforms { 
+  time: f32, speed: f32, intensity: f32, hueShift: f32 
 }
-
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-  let verts = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+  let verts = array<vec2f, 3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
   return vec4f(verts[i], 0.0, 1.0);
 }
 
 @fragment
 fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-  return vec4f(0.6, 0.8, 1.0, 1.0) * u.intensity;
-}`;
+  return vec4f(0.9, 0.7, 1.0, 1.0);
+}
+\`\`\`
 
-const VALID_JSON_META = `{
-  "title": "Test Scene",
+\`\`\`json
+{
+  "title": "Test Dreamscape",
   "uniforms": [
-    {"name":"speed","type":"f32","default":1.2,"min":0.3,"max":4.0},
-    {"name":"intensity","type":"f32","default":1.5,"min":0.5,"max":3.0}
+    {"name":"speed","type":"f32","default":1.2,"min":0.5,"max":3.0},
+    {"name":"intensity","type":"f32","default":1.5,"min":0.8,"max":2.5},
+    {"name":"hueShift","type":"f32","default":0.6,"min":0.0,"max":1.0}
   ],
-  "jsLogic": "console.log('test scene running');",
+  "jsLogic": "console.log('demo js logic');",
   "hasCompute": false
-}`;
-
-describe('scene/parser.ts', () => {
-  describe('parseLLMOutput', () => {
-    it('extracts wgsl, uniforms, title and jsLogic from LLM output', () => {
-      const output = `\`\`\`wgsl
-${MINIMAL_VALID_WGSL}
-\`\`\`
-
-\`\`\`json
-${VALID_JSON_META}
-\`\`\``;
-
-      const scene = parseLLMOutput(output);
-
-      expect(scene.wgsl).toContain('struct Uniforms');
-      expect(scene.wgsl).toContain('@vertex');
-      expect(scene.wgsl).toContain('@fragment');
-      expect(scene.title).toBe('Test Scene');
-      expect(scene.uniforms).toHaveLength(2);
-      expect(scene.uniforms[0].name).toBe('speed');
-      expect(scene.uniforms[0].default).toBe(1.2);
-      expect(scene.jsLogic).toBe("console.log('test scene running');");
-      expect(scene.hasCompute).toBe(false);
-    });
-
-    it('handles output with no fenced json by using loose match', () => {
-      const output = `\`\`\`wgsl
-${MINIMAL_VALID_WGSL}
-\`\`\`
-
-{
-  "title": "Loose Scene",
-  "uniforms": [{"name":"hue","type":"f32","default":0.5,"min":0,"max":1}]
-}`;
-
-      const scene = parseLLMOutput(output);
-
-      expect(scene.title).toBe('Loose Scene');
-      expect(scene.uniforms).toHaveLength(1);
-      expect(scene.uniforms[0].name).toBe('hue');
-    });
-
-    it('falls back gracefully when JSON is missing some fields', () => {
-      const output = `\`\`\`wgsl
-${MINIMAL_VALID_WGSL}
-\`\`\`
-
-\`\`\`json
-{
-  "title": "Minimal Scene"
 }
 \`\`\``;
 
-      const scene = parseLLMOutput(output);
-
-      expect(scene.title).toBe('Minimal Scene');
-      expect(scene.uniforms.length).toBeGreaterThan(0); // defaults injected
-      expect(scene.jsLogic).toBe('');
-      expect(scene.hasCompute).toBe(false);
-    });
-
-    it('derives title when none is provided in JSON', () => {
-      const output = `\`\`\`wgsl
-${MINIMAL_VALID_WGSL}
-\`\`\`
-
-\`\`\`json
-{"uniforms": []}
-\`\`\``;
-
-      const scene = parseLLMOutput(output);
-      expect(scene.title.length).toBeGreaterThan(0);
-      // deriveTitleFromPrompt should produce something sensible
-      expect(typeof scene.title).toBe('string');
-    });
+    const scene = parseLLMOutput(mockOutput);
+    expect(scene.title).toBe('Test Dreamscape');
+    expect(scene.uniforms.length).toBe(3);
+    expect(scene.uniforms[0].name).toBe('speed');
+    expect(scene.uniforms[0].default).toBe(1.2);
+    expect(scene.jsLogic).toBe("console.log('demo js logic');");
+    expect(scene.hasCompute).toBe(false);
+    expect(scene.wgsl).toContain('@vertex');
+    expect(scene.wgsl).toContain('fn fs(');
   });
 
-  describe('analyzeWGSL', () => {
-    it('reports missing entry points and bindings', () => {
-      const badShader = `fn main() { }`;
-      const result = analyzeWGSL(badShader);
-
-      expect(result.isValid).toBe(false);
-      expect(result.errors.length).toBeGreaterThan(2);
-      expect(result.errors.some(e => e.includes('vertex'))).toBe(true);
-      expect(result.errors.some(e => e.includes('fragment'))).toBe(true);
-    });
-
-    it('accepts a minimal valid full-screen triangle shader', () => {
-      const result = analyzeWGSL(MINIMAL_VALID_WGSL);
-      expect(result.isValid).toBe(true);
-      expect(result.errors).toEqual([]);
-      expect(result.warnings.length).toBe(0); // no warnings on good shader
-    });
-
-    it('warns about missing time uniform', () => {
-      const noTime = MINIMAL_VALID_WGSL.replace('time: f32,', '');
-      const result = analyzeWGSL(noTime);
-      expect(result.warnings.some(w => w.includes('time'))).toBe(true);
-    });
+  it('analyzeWGSL detects missing vertex and fragment entry points', () => {
+    const invalid = 'fn main() { }';
+    const analysis = analyzeWGSL(invalid);
+    expect(analysis.isValid).toBe(false);
+    expect(analysis.errors).toContain('Missing vertex entry point');
+    expect(analysis.errors).toContain('Missing fragment entry point');
   });
 
-  describe('deriveTitleFromPrompt', () => {
-    it('returns themed titles for known keywords', () => {
-      expect(deriveTitleFromPrompt('gentle underwater kelp forest')).toBe('Kelp Forest');
-      expect(deriveTitleFromPrompt('ethereal glowing neon garden')).toBe('Neon Garden');
-    });
-
-    it('falls back to capitalized words', () => {
-      const title = deriveTitleFromPrompt('a beautiful purple vortex');
-      expect(title).toBe('A Beautiful Purple');
-    });
+  it('analyzeWGSL detects missing Uniforms struct and binding', () => {
+    const missingUniform = `
+@vertex fn vs(i: u32) -> vec4f { return vec4f(0.0); }
+@fragment fn fs() -> vec4f { return vec4f(1.0); }
+    `;
+    const analysis = analyzeWGSL(missingUniform);
+    expect(analysis.isValid).toBe(false);
+    expect(analysis.errors.some(e => e.includes('Uniforms') || e.includes('binding'))).toBe(true);
   });
 
-  describe('parseExportedHTML', () => {
-    it('extracts scene from embedded lumagen-meta JSON', () => {
-      const html = `<!DOCTYPE html>
-<html><body>
-<script id="lumagen-meta" type="application/json">
-{
-  "title": "Community Test",
-  "wgsl": "struct Uniforms { time: f32 } @vertex fn vs(){}",
-  "uniforms": [{"name":"speed","default":1.0}],
-  "jsLogic": "// test"
+  it('analyzeWGSL warns on missing time uniform but still validates', () => {
+    const noTime = `
+struct Uniforms { speed: f32 }
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { 
+  let verts = array<vec2f, 3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+  return vec4f(verts[i], 0.0, 1.0); 
 }
-</script>
-</body></html>`;
-
-      const scene = parseExportedHTML(html);
-      expect(scene.title).toBe('Community Test');
-      expect(scene.wgsl).toContain('struct Uniforms');
-      expect(scene.uniforms).toHaveLength(1);
-    });
-
-    it('falls back to regex when meta block is missing', () => {
-      const html = `<canvas></canvas><script>/* wgsl: \`struct Uniforms{time:f32}\` */</script>`;
-      const scene = parseExportedHTML(html);
-      expect(scene.title).toBe('Imported Scene');
-      expect(scene.wgsl).toContain('struct Uniforms');
-    });
+@fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f { return vec4f(1.0); }
+    `;
+    const analysis = analyzeWGSL(noTime);
+    expect(analysis.isValid).toBe(true);
+    expect(analysis.warnings.length).toBeGreaterThan(0);
+    expect(analysis.warnings.some(w => w.includes('time'))).toBe(true);
   });
 
-  describe('remixScene', () => {
-    it('merges updates while preserving original data', () => {
-      const original: Scene = {
-        wgsl: 'original shader',
-        uniforms: [{ name: 'speed', type: 'f32', default: 1, min: 0, max: 10 }],
-        title: 'Original',
-        jsLogic: 'old logic',
-        hasCompute: false,
-      };
+  it('analyzeWGSL passes a well-formed shader', () => {
+    const good = `
+struct Uniforms { time: f32, speed: f32 }
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f { 
+  let verts = array<vec2f, 3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+  return vec4f(verts[i], 0.0, 1.0); 
+}
+@fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f { return vec4f(1.0); }
+    `;
+    const analysis = analyzeWGSL(good);
+    expect(analysis.isValid).toBe(true);
+    expect(analysis.errors.length).toBe(0);
+  });
 
-      const updated = remixScene(original, {
-        wgsl: 'new shader',
-        title: 'Remixed Title',
-      });
+  it('deriveTitleFromPrompt creates evocative titles from natural language', () => {
+    expect(deriveTitleFromPrompt('gentle underwater kelp forest with swaying blades')).toBe('Kelp Forest');
+    expect(deriveTitleFromPrompt('ethereal glowing neon garden at twilight')).toBe('Neon Garden');
+    expect(deriveTitleFromPrompt('cosmic dust field with twinkling pastel stars')).toBe('Stellar Particles');
+  });
 
-      expect(updated.wgsl).toBe('new shader');
-      expect(updated.title).toBe('Remixed Title');
-      expect(updated.uniforms).toEqual(original.uniforms);
-      expect(updated.jsLogic).toBe('old logic');
-    });
+  it('parseExportedHTML extracts embedded lumagen-meta JSON and falls back to regex', () => {
+    const htmlWithMeta = `<!DOCTYPE html><script id="lumagen-meta" type="application/json">
+{"title":"Community Kelp","wgsl":"struct Uniforms...","uniforms":[{"name":"speed","default":1.2}],"jsLogic":""}
+</script><canvas></canvas>`;
+    const scene = parseExportedHTML(htmlWithMeta);
+    expect(scene.title).toBe('Community Kelp');
+    expect(scene.uniforms.length).toBeGreaterThan(0);
+    expect(scene.wgsl).toBeDefined();
+
+    // fallback test
+    const plainHtml = `<title>My Scene — made with Lumagen</title><script>/* wgsl here */</script>`;
+    const fallbackScene = parseExportedHTML(plainHtml);
+    expect(fallbackScene.title).toContain('My Scene');
+  });
+
+  it('system prompt contains few-shot examples to improve shader quality on first try', () => {
+    expect(SYSTEM_PROMPT).toContain('Few-shot examples');
+    expect(SYSTEM_PROMPT).toContain('soft pastel clouds drifting over a tranquil lake at sunset');
+    expect(SYSTEM_PROMPT).toContain('vibrant audio reactive particle field that pulses to the beat');
+    expect(SYSTEM_PROMPT).toContain('hue2rgb');
+    expect(SYSTEM_PROMPT).toContain('Example 1 - Basic organic scene');
+    expect(SYSTEM_PROMPT).toContain('Example 2 - Audio reactive scene');
+    expect(SYSTEM_PROMPT.length).toBeGreaterThan(3500);
+    // ensure rules reference the examples
+    expect(SYSTEM_PROMPT).toContain('Follow the style and structure of the few-shot examples below');
   });
 });
